@@ -21,13 +21,41 @@ When reporting, please include:
 
 ## Scope
 
-This CLI reads data from a personal BoursoBank account via session cookies
-extracted from the local Chrome browser. Security-relevant areas include:
+This CLI reads data from a personal BoursoBank account. It reads the
+existing session from the local Chrome profile and gets a short-lived API
+bearer from the dashboard. Security-relevant areas:
 
-- Cookie and bearer token handling (extraction, storage, transmission)
-- Config file permissions (must remain 0600)
-- HTTP transport (TLS, redirect allowlist, no cookie exfiltration)
-- Temporary file cleanup (no secrets left on disk)
+- Cookie extraction: the vendored sweet-cookie (`internal/auth/sweetcookie`,
+  checked against npm by `make verify-vendor`), run by node in a private
+  temp folder with a minimal environment.
+- Secrets at rest: only the bearer (≤24h) and the user hash, in a private
+  `config.json` (folder 0700, file 0600, owner and no-symlink checks). The
+  Chrome cookie jars are never written to disk.
+- Egress: `internal/client/egress.go` is the only way out. HTTPS, exact
+  hosts, GET only (plus the session-refresh POST when the owner allows it),
+  no dot segments or encoded bytes in paths, redirects checked hop by hop.
+- Input validation: every value that goes into a URL path.
+- Local files: `export --out` creates a new file only (O_EXCL).
+- Build and release: actions pinned by SHA, tools by version, images by
+  digest; no Homebrew cask.
+
+## Threat model
+
+In scope:
+
+- A malicious or compromised npm package or registry (no npm at runtime).
+- A hostile redirect, or a hostile value in an argument (for example from
+  an agent under prompt injection) that tries to reach another endpoint,
+  another host, or a non-GET method.
+- Another local user who can write to a shared folder (`/tmp`, a mounted
+  config folder).
+
+Out of scope — the code cannot prevent it:
+
+- A process running as the same user. It can read `config.json` and
+  decrypt the Chrome cookie store itself.
+- The bank API: with a valid session it also accepts orders and transfers.
+  Read-only is a property of this binary, not of the bank.
 
 ## Supported Versions
 

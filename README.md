@@ -1,91 +1,93 @@
-# 🏦 boursocli
+# 🏦 boursocli — fork durci (lecture seule)
 
 CLI agent-first pour un compte BoursoBank (ex-Boursorama Banque)
-**personnel**. Orienté lecture ; le virement assisté (prévu) est
-human-in-the-loop et **s'arrête à l'écran SCA — il n'exécute ni ne contourne
-jamais l'authentification forte**.
+**personnel**, **en lecture seule**.
+
+Ce dépôt est un fork de
+[ThomasMarcelin754/boursocli](https://github.com/ThomasMarcelin754/boursocli).
+La branche `hardening` le rend sûr à confier à un agent (Claude Code…) :
+pas de npm au runtime, pas de cookies sur disque, une seule porte de sortie
+réseau, GET uniquement. Le détail est dans [Sécurité](#sécurité) et dans
+`SECURITY.md`.
 
 > Un seul titulaire, son propre compte, au rythme humain. Pas une ferme de
-> scraping, pas multi-locataire. Voir `CLAUDE.md` / `AGENTS.md` pour la
-> conception et les règles de contribution.
+> scraping, pas multi-locataire. Voir `AGENTS.md` pour les règles de
+> contribution.
 
 ## Installation
 
+Depuis les sources, sur un commit que vous avez relu :
+
 ```sh
-# Homebrew (macOS/Linux) — build depuis les sources, tire Go + Node :
-brew tap thomasmarcelin754/tap
-brew install thomasmarcelin754/tap/boursocli
-
-# ou Go :
-go install github.com/thomasmarcelin754/boursocli/cmd/boursocli@latest
-
-# ou un binaire de release (goreleaser : darwin/linux/windows × amd64/arm64,
-# sans CGO, avec checksums — déclenché au tag via .github/workflows/release.yml)
-
-# ou depuis les sources :
-git clone … && cd boursocli && make build && ./boursocli --help
+git clone https://github.com/glutamatt/boursocli && cd boursocli
+git checkout hardening          # ou un commit précis
+make build && ./boursocli --help
+make check                      # tests, lint (gosec), govulncheck, vérif du vendoring
 ```
 
-Canaux d'installation : Homebrew (tap) · `go install` · binaires de release ·
-Docker. **Pas de npm/npx** — un binaire Go se distribue nativement ; un
-wrapper npm ajouterait une couche JS + un postinstall qui télécharge un
-binaire (surface supply-chain) pour zéro gain. Processus de release Homebrew :
-`docs/releasing-homebrew.md`.
+Il faut :
 
-**Docker** (`make docker`) : le binaire tourne, mais l'auth chromecookies
-déchiffre le keychain de l'OS *hôte* — indisponible dans un conteneur.
-À utiliser pour les commandes de lecture avec un `config.json` valide monté :
+- **Go ≥ 1.21** (avec `GOTOOLCHAIN=auto`, le défaut, Go télécharge la
+  toolchain 1.25.10 requise par `go.mod`) ;
+- **Node ≥ 22.13** sur le `PATH` (pour `node:sqlite`) — **pas npm** ;
+- sous Linux, **`secret-tool`** (paquet `libsecret-tools`) pour lire la clé
+  « Chrome Safe Storage » du trousseau GNOME (`kwallet-query` sous KDE) ;
+- **Chrome connecté à BoursoBank**.
+
+Pas de cask Homebrew dans ce fork : celui d'origine retirait le drapeau de
+quarantaine macOS et ne vérifiait pas la signature cosign. Les binaires de
+release sont signés : vérifiez `checksums.txt` avec cosign avant usage.
+
+**Docker** (`make docker`) : l'extraction des cookies lit le trousseau de
+l'OS *hôte*, indisponible dans un conteneur. Un `config.json` monté ne
+contient que le bearer (≤ 24 h) : les commandes du plan Bearer marchent
+jusqu'à son expiration.
 
 ```sh
-docker run --rm -v "$HOME/Library/Application Support/boursocli:/cfg:ro" \
+docker run --rm -v "$HOME/.config/boursocli:/cfg" \
   boursocli:dev --config /cfg/config.json accounts
 ```
-Aucun secret n'est intégré à l'image — les identifiants sont montés au runtime.
-
-Nécessite **Go ≥ 1.21** (avec `GOTOOLCHAIN=auto`, le défaut, Go télécharge
-automatiquement la toolchain 1.25.10 requise par `go.mod`). Le chemin d'auth requiert aussi **Node + npm**
-une fois (installation unique de `@steipete/sweet-cookie`) et **Chrome
-connecté à BoursoBank** — voir Authentification.
 
 ## Authentification (sans mot de passe, sans secret d'environnement)
 
-`boursocli` ne demande jamais votre mot de passe et **ne lit aucun secret
-depuis l'environnement ni un `.env`**. Il extrait la session BoursoBank
-*existante* depuis votre profil **Chrome** local (cookies déchiffrés via le
-keychain de l'OS, bi-domaine `clients.boursobank.com` +
-`clients.boursorama.com`), puis scrape le bearer API éphémère du dashboard.
+`boursocli` ne demande jamais votre mot de passe et ne lit aucun secret
+depuis l'environnement. Il lit la session BoursoBank *existante* dans votre
+profil **Chrome** local, puis récupère le bearer API (24 h) sur le dashboard.
 
-- Rester connecté à BoursoBank dans Chrome. Le premier lancement installe un
-  helper Node.
-- `--refresh` force la ré-extraction des cookies + re-scrape du bearer.
-- Les secrets de session vivent **uniquement** dans `config.json` (dossier
-  config de l'OS, mode `0600`, dans un dossier `0700`, écriture atomique).
-  `config show` masque tout.
+- Les cookies sont déchiffrés par [sweet-cookie](internal/auth/sweetcookie/VENDOR.md),
+  **intégré au binaire** (copie vérifiée du paquet npm 0.2.0). node tourne
+  dans un dossier privé temporaire, avec un environnement minimal, et ce
+  dossier est effacé à la fin — même si node est tué.
+- Les cookies restent **en mémoire**. Ils ne sont jamais écrits sur disque.
+- Sur disque (`config.json`, dossier `0700`, fichier `0600`) : seulement le
+  bearer, sa date d'expiration, le user hash et vos réglages. Le CLI refuse
+  un dossier ou un fichier trop ouvert, un lien symbolique, ou un fichier
+  qui n'est pas à vous.
+- `config show` masque les secrets ; `config wipe` efface le bearer.
+- `--refresh` force un nouveau bearer depuis Chrome.
 
-### Durabilité de session (espacer les reconnexions)
+### Profil Chrome
 
-BoursoBank est sous DSP2/SCA : aucune session n'est éternelle et **aucune
-reconnexion ne peut être scriptée** (anti-bot + clavier-image + SCA hors-bande).
-On ne *supprime* pas la reconnexion — on l'**espace au maximum** et on la rend
-indolore, via le mécanisme prévu par la banque :
+Sans profil épinglé, le premier lancement choisit le profil Chrome dont la
+session BoursoBank est la plus récente, puis **l'épingle** dans la config :
+le scan de tous les profils n'a lieu qu'une fois. Pour choisir vous-même :
 
-1. **Cocher « Se souvenir de moi » à la connexion.** Cela émet le cookie
-   `rememberme`, mécanisme *device-trust* prévu par la banque pour
-   raccourcir/sauter le SCA d'un navigateur de confiance. ⚠️ *Comportement
-   non vérifié empiriquement ici (inféré du flux d'auth) — à confirmer à
-   l'usage ; ne pas en dépendre comme d'une garantie.*
-2. **Profil Chrome dédié et stable** (utilisé seulement pour BoursoBank, jamais
-   nettoyé) : le `rememberme` y survit longtemps. Épinglez-le une fois :
-   ```sh
-   boursocli config set chrome_profile "Profile 9"   # nom ou chemin
-   ```
-3. **Sans profil épinglé**, le CLI **auto-sélectionne** le profil dont la
-   session BoursoBank est la plus fraîche (scan de tous les profils Chrome,
-   métadonnées seules) — fini la loterie entre profils.
+```sh
+boursocli config set chrome_profile "Profile 9"   # nom ou chemin
+```
 
-Quand la session meurt malgré tout : reconnectez-vous **une fois** dans ce
-profil (en cochant « Se souvenir de moi »), puis `--refresh`. C'est le maximum
-de durabilité que la DSP2 autorise — aucun raccourci n'existe.
+### Durée de session
+
+BoursoBank est sous DSP2/SCA : aucune session n'est éternelle et aucune
+reconnexion ne peut être scriptée. C'est **Chrome** qui porte la session.
+
+- Quand le bearer expire ou est refusé, le CLI en prend un nouveau depuis la
+  session Chrome (une requête GET). Il ne prolonge jamais la session lui-même.
+- Si la session Chrome est morte : reconnectez-vous dans Chrome (en cochant
+  « Se souvenir de moi »), puis relancez la commande.
+- Le renouvellement serveur (`POST session/auth/refresh`) est **désactivé**
+  par défaut, car il prolonge la session à la banque. Pour l'autoriser :
+  `--allow-session-refresh`, ou `config set allow_session_refresh true`.
 
 ## Utilisation
 
@@ -97,7 +99,7 @@ stderr, code de sortie `0`/`1`. `--format table` pour les humains,
 boursocli accounts                      # comptes + soldes (JSON)
 boursocli accounts --format table
 boursocli operations --account cav      # opés récentes (Bearer, 30 plus récentes)
-boursocli export --account cav --out ops.csv   # historique complet CSV
+boursocli export --account cav --out ops.csv   # historique complet CSV (nouveau fichier)
 boursocli positions --account ord       # portefeuille titres
 boursocli ord-orders --account ord
 boursocli ord-fiscalite --account ord --year 2026
@@ -110,34 +112,90 @@ boursocli version ; boursocli --version
 ```
 
 `--account` prend un `accountKey` (32-hex) ou un type : `cav` | `ord` |
-`card` | `pea`. Ambiguïté/aucune correspondance → une erreur explicite
-listant les choix (jamais un défaut silencieux).
+`card` | `pea`. Ambiguïté ou aucune correspondance → une erreur explicite
+qui liste les choix.
 
-Les 12 commandes de lecture ont été **validées sur un compte réel** (HTTP 200 +
-données réelles, 2026-05-19). Les échecs sont toujours explicites : un
-non-200, une erreur de décodage ou une dérive de schéma sort en `1` avec
-`{"ok":false,"error":…}` — jamais un vide trompeur.
+`export --out` crée **un nouveau fichier** : il n'écrase jamais un fichier
+existant et ne suit jamais un lien symbolique.
+
+Les échecs sont toujours explicites : un non-200, une erreur de décodage ou
+une dérive de schéma sort en `1` avec `{"ok":false,"error":…}`.
 
 ## Cibles Make
 
 ```sh
-make build   # go build ./...
-make test    # go test ./... -race
-make lint    # golangci-lint (incl. gosec)
-make sec     # lint + govulncheck (sécurité seule)
-make check   # fmt vet test lint vulncheck — la porte pré-commit complète
+make build          # go build
+make test           # go test ./... -race
+make lint           # golangci-lint (incl. gosec)
+make verify-vendor  # sweet-cookie intégré == tarball npm (intégrité + diff octet par octet)
+make sec            # lint + govulncheck + verify-vendor
+make check          # fmt vet test lint vulncheck verify-vendor — la porte complète
 ```
 
 ## Sécurité
 
-Deux couches, dans `make check` et la CI : **`gosec`** (statique, via
-golangci-lint) sur notre code + **`govulncheck`** (scanner CVE officiel de
-l'équipe Go, conscient de l'atteignabilité) sur les dépendances et la stdlib.
-Aucun secret n'est jamais committé, loggué, ni lu depuis l'environnement.
-Modèle complet : `CLAUDE.md` → *Outillage de sécurité*.
+### Ce que garantit le code
+
+- **Lecture seule.** Une garde sur le transport HTTP voit chaque requête et
+  chaque redirection avant envoi : **GET uniquement**. Le seul POST existant
+  (renouvellement de session) est refusé sauf autorisation explicite.
+- **Une seule destination.** HTTPS vers `clients.boursobank.com`,
+  `api.boursobank.com`, `clients.boursorama.com` — hôtes exacts, pas de
+  sous-domaine. Pas de segment `..`, pas d'octet encodé dans le chemin.
+  Une redirection ailleurs est refusée.
+- **Entrées vérifiées.** Symboles, codes d'indice, ids, années, dates et
+  clés de compte sont vérifiés avant toute session : `quote --symbol` ne
+  peut lire qu'une cotation.
+- **Pas de npm, pas de cookies sur disque** (voir Authentification).
+- **Chaîne de build figée** : actions GitHub épinglées par SHA, outils par
+  version, images Docker par digest.
+
+### Ce que le code ne peut pas garantir
+
+- **La banque ne connaît pas de « lecture seule ».** Avec le bearer ou les
+  cookies Chrome, l'API BoursoBank permet aussi de passer des ordres et de
+  faire des virements. La lecture seule vient de ce binaire, pas de la
+  banque.
+- **Tout processus lancé sous votre compte** peut lire `config.json` (le
+  bearer, 24 h max) et déchiffrer lui-même les cookies Chrome. C'était déjà
+  vrai avant ce CLI ; il ne l'aggrave pas, mais ne peut pas l'empêcher.
+- **Injection de prompt.** Les libellés d'opérations et la messagerie
+  (`messages`) viennent de tiers. Un agent qui les lit peut y trouver des
+  instructions. Ne donnez jamais à cet agent un moyen d'écrire à la banque.
+
+### Utilisation avec Claude Code
+
+Des garde-fous, pas une frontière de sécurité (un agent qui a un shell peut
+les contourner). Exemple de `.claude/settings.json` :
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(boursocli accounts:*)",
+      "Bash(boursocli operations:*)",
+      "Bash(boursocli positions:*)",
+      "Bash(boursocli export:*)"
+    ],
+    "deny": [
+      "Read(~/.config/boursocli/**)",
+      "Bash(boursocli config set:*)"
+    ]
+  }
+}
+```
+
+Laissez `allow_session_refresh` à `false`. Le drapeau
+`--allow-session-refresh` peut se placer n'importe où dans la commande : une
+règle par préfixe ne suffit pas à l'interdire, relisez les commandes de
+l'agent.
 
 ## État
 
-Fait : 12 commandes de lecture, sécurité propre, validées sur un compte réel.
-Pas encore construit : le `virement` assisté (écriture, sous SCA). Ce dépôt
-ne contient que le code du client : pas de spécification d'API tierce.
+- 21 commandes de lecture, validées sur un compte réel par l'auteur
+  d'origine (2026-05-20). Le durcissement de ce fork est couvert par des
+  tests hors ligne (serveurs httptest, faux profil Chrome) ; revalidez sur
+  votre compte après installation.
+- Pas de virement, ni d'aucune écriture : c'est voulu.
+- Ce dépôt ne contient que le code du client : pas de spécification d'API
+  tierce.

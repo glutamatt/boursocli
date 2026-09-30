@@ -1,4 +1,4 @@
-# Secrets — never commit (config.json holds bearer/cookies, 0600)
+# Secrets — never commit (config.json holds the bearer, 0600)
 config.json
 *.config.json
 .env
@@ -18,7 +18,7 @@ scripts/session-ttl.log
 *.test
 *.out
 
-# Node (sweet-cookie runtime cache)
+# Node (none needed: sweet-cookie is vendored in internal/auth/sweetcookie)
 node_modules/
 
 # macOS

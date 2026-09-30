@@ -3,6 +3,40 @@
 Tous les changements notables de ce projet. Format :
 [Keep a Changelog](https://keepachangelog.com), SemVer.
 
+## [Non publié] — fork durci (branche `hardening`)
+
+Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
+
+### Sécurité
+- **Plus de npm au runtime** : sweet-cookie 0.2.0 est intégré au binaire
+  (`internal/auth/sweetcookie`, vérifié par `make verify-vendor`). node
+  tourne dans un dossier privé temporaire, effacé même si node est tué,
+  avec un environnement minimal (`NODE_OPTIONS`, `SWEET_COOKIE_*`, `PATH`
+  utilisateur exclus), `--no-addons`, sans `eval`.
+- **Garde de sortie** sur le transport : HTTPS, hôtes exacts, GET
+  uniquement, chemins sans `..` ni octet encodé, chaque redirection
+  vérifiée. Le cookie n'est jamais ajouté à une requête du plan Bearer.
+- **Plus de cookies sur disque** (dont `rememberme`) : lus dans Chrome à la
+  demande, gardés en mémoire. Une config v1 est nettoyée au chargement.
+- **Plus de renouvellement automatique de session** : désactivé par
+  défaut (`--allow-session-refresh`, `config set allow_session_refresh`).
+- **Config privée** : dossier 0700, fichier 0600, à vous, sans lien
+  symbolique ; écriture atomique par fichier temporaire aléatoire.
+- **Entrées vérifiées** avant toute session (symboles, ids, années, dates,
+  page, clés de compte).
+- `export --out` n'écrase jamais un fichier et ne suit pas de lien.
+- Probe : seule une erreur d'authentification relit Chrome.
+- CI/release : injection shell du workflow de release corrigée ; actions
+  épinglées par SHA, outils par version, images par digest ; cask Homebrew
+  retiré. `golang.org/x/net` 0.53.0 → 0.56.0.
+
+### Ajouté
+- `config wipe`, `config set allow_session_refresh true|false`.
+- Le profil Chrome choisi automatiquement est épinglé dans la config.
+
+### Requis
+- Node ≥ 22.13 (plus npm).
+
 ## [0.1.0-rc.1] — 2026-05-19
 
 Première prerelease : valide le pipeline de release (goreleaser 6
