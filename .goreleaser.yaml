@@ -57,24 +57,7 @@ release:
   # No secrets in artifacts; the binary holds only build metadata.
   prerelease: auto
 
-homebrew_casks:
-  - name: boursocli
-    binaries:
-      - boursocli
-    homepage: "https://github.com/thomasmarcelin754/boursocli"
-    description: "Agent-first CLI for a personal BoursoBank account"
-    license: "MIT"
-    skip_upload: auto
-    dependencies:
-      - formula: node
-    hooks:
-      post:
-        install: |
-          if OS.mac?
-            system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/boursocli"]
-          end
-    repository:
-      owner: thomasmarcelin754
-      name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
-    directory: Casks
+# No Homebrew cask: the upstream cask stripped the macOS quarantine flag
+# (xattr -dr com.apple.quarantine) and never checked the cosign signature.
+# Install from source, or download a release and verify checksums.txt with
+# cosign (see README).

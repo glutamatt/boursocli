@@ -13,6 +13,8 @@ on:
 # Only the default GITHUB_TOKEN, scoped to publishing the release. No
 # project secrets exist or are needed — the CLI's credentials are the user's
 # local Chrome/OS-keychain at runtime, never baked into a binary or image.
+# Every action is pinned by commit SHA and goreleaser by version: a moved
+# tag cannot change what runs with contents:write + id-token:write.
 # id-token: keyless cosign signing of checksums.txt via GitHub OIDC (no key).
 permissions:
   contents: write
@@ -22,24 +24,33 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6.1.0
         with:
           fetch-depth: 0
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version-file: go.mod
           cache: true
+      # The input goes through an env var (never ${{ }} inside the script)
+      # and must be a plain SemVer tag.
       - name: Check out the requested tag (manual dispatch)
         if: github.event_name == 'workflow_dispatch'
-        run: git checkout "${{ inputs.tag }}"
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]]; then
+            echo "invalid tag: $TAG" >&2
+            exit 1
+          fi
+          git checkout --detach "refs/tags/$TAG"
       # goreleaser-action bundles neither syft nor cosign; the .goreleaser.yaml
       # sboms:/signs: stages need both on PATH or the release fails.
-      - uses: anchore/sbom-action/download-syft@v0
-      - uses: sigstore/cosign-installer@v3
-      - uses: goreleaser/goreleaser-action@v7
+      - uses: anchore/sbom-action/download-syft@3ad7283483fc7af8ff2b4ea19663c2d5ca935e26 # v0.24.2
+      - uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
+      - uses: goreleaser/goreleaser-action@f06c13b6b1a9625abc9e6e439d9c05a8f2190e94 # v7.2.3
         with:
-          version: latest
+          version: v2.18.2
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
