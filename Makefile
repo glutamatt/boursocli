@@ -3,10 +3,23 @@ GOLANGCI    := go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.
 GOVULNCHECK := go run golang.org/x/vuln/cmd/govulncheck@v1.8.0
 GORELEASER  := go run github.com/goreleaser/goreleaser/v2@v2.18.2
 
-.PHONY: build test vet fmt lint vulncheck verify-vendor sec check release-check snapshot docker
+.PHONY: build install test vet fmt lint vulncheck verify-vendor sec check release-check snapshot docker
+
+# Build metadata: `boursocli version` says which commit runs.
+PKG     := github.com/thomasmarcelin754/boursocli/internal/version
+COMMIT  := $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DIRTY   := $(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
+LDFLAGS := -X $(PKG).Version=$(shell git describe --tags --always 2>/dev/null || echo dev) \
+           -X $(PKG).Commit=$(COMMIT)$(DIRTY) \
+           -X $(PKG).Date=$(shell date -u +%Y-%m-%dT%H:%M:%SZ)
+PREFIX  ?= $(HOME)/.local
 
 build:
-	go build -o boursocli ./cmd/boursocli
+	go build -trimpath -ldflags "$(LDFLAGS)" -o boursocli ./cmd/boursocli
+
+# Install to $(PREFIX)/bin (default ~/.local/bin).
+install: build
+	install -D -m 0755 boursocli $(PREFIX)/bin/boursocli
 
 test:
 	go test ./... -race
