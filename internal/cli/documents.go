@@ -20,16 +20,15 @@ func newDocumentsCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
-		var path string
-		switch a.urlKind() {
-		case "ord", "pea":
-			path = "/compte/" + a.urlKind() + "/" + a.AccountKey + "/documents"
-		case "cav":
-			path = "/compte/cav/" + a.AccountKey + "/releves"
-		default:
-			return out.Fail(fmt.Errorf("le type de compte %q n'a pas de page documents (utiliser un compte cav, ord ou pea)", a.urlKind()))
+		if err := requireKind("documents", a, "pea", "ord", "cav", "livret"); err != nil {
+			return out.Fail(err)
 		}
-		doc, err := getHTML(ctx, cl, path)
+		// Statements of livrets live under the CAV path too (checked live).
+		path := "/compte/cav/" + a.AccountKey + "/releves"
+		if k := a.urlKind(); k == "pea" || k == "ord" {
+			path = "/compte/" + k + "/" + a.AccountKey + "/documents"
+		}
+		doc, err := getPage(ctx, cl, path, "table.documents__table")
 		if err != nil {
 			return out.Fail(err)
 		}

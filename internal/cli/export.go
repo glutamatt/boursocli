@@ -54,6 +54,9 @@ func newExportCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
+		if err := requireKind("export", a, "cav", "livret"); err != nil {
+			return out.Fail(err)
+		}
 		now := time.Now()
 		if from == "" {
 			from = now.AddDate(-3, 0, 0).Format("02/01/2006")

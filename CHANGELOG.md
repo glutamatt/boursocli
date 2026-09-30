@@ -40,6 +40,26 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
   re-scanné s'il n'a plus de session.
 - Symboles `$…` (indices US : `$INDU`, `$COMPX`) acceptés.
 
+### Corrigé (test sur un compte réel, 2026-09-30)
+- Types de comptes : livrets (`livret`), PEA (`pea`), assurance-vie (`av`)
+  et autres assurances (`assurance`) étaient tous classés `ord`.
+- Chaque commande vérifie le type du compte et indique la bonne commande.
+- `positions` : colonnes lues par leur titre (le PEA n'a pas « Dernier
+  Mvt ») ; variation du jour lue.
+- `ord-ost` : l'état vide (aucune OST) n'est plus une erreur.
+- `docs --section bourse` : filtre compte + période (`--account`, `--from`,
+  `--to`), sans quoi la page ne liste rien ; liens de téléchargement lus.
+- `card` : lit la carte dans la liste des comptes (l'endpoint
+  `parameterssummary` répond 404).
+- Pages HTML servies sans leur tableau : un nouvel essai, puis une erreur
+  explicite — plus jamais « 0 document » en silence.
+
+### Ajouté (suite)
+- `ord-mouvements --period M-AAAA[,…]` et `availablePeriods`.
+
+### Connu
+- `export` cassé : la banque exige un POST avec jeton CSRF.
+
 ### Requis
 - Node ≥ 22.13 (plus npm).
 

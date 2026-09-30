@@ -36,6 +36,9 @@ func newBudgetMovementsCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
+		if err := requireKind("budget-movements", a, "cav", "livret"); err != nil {
+			return out.Fail(err)
+		}
 		webid := a.PfmAccountKey
 		if webid == "" {
 			return out.Fail(fmt.Errorf("le compte %s n’a pas de pfmAccountKey (webid budget) — non activé PFM", a.AccountKey))
@@ -54,7 +57,7 @@ func newBudgetMovementsCmd() *cobra.Command {
 		q.Set("movementSearch[fromDate]", from)
 		q.Set("movementSearch[toDate]", to)
 		q.Add("movementSearch[selectedAccounts][]", webid)
-		doc, err := getHTML(ctx, cl, "/budget/compte/"+webid+"/mouvements?"+q.Encode())
+		doc, err := getPage(ctx, cl, "/budget/compte/"+webid+"/mouvements?"+q.Encode(), "ul.list__movement")
 		if err != nil {
 			return out.Fail(err)
 		}

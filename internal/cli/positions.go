@@ -26,10 +26,10 @@ func mknum(s string) num {
 	return n
 }
 
-// position mirrors the ORD positions table (10 cols, a "Dernier Mvt"
-// column before Notification). Positional, mapped 0..9:
-// [0]"" [1]Valeur [2]Quantité [3]Px.Revient [4]Cours [5]Montant
-// [6]+/-Latentes [7]+/-% [8]"Dernier Mvt" [9]Notification.
+// position is one line of the positions table. Columns are read BY HEADER,
+// not by position: the PEA table has no "Dernier Mvt" column (9 columns,
+// checked live 2026-09-30) while the ORD table had one (10). A missing
+// required header is a loud schema-drift error.
 type position struct {
 	Name        string `json:"name"`
 	ISIN        string `json:"isin"`
@@ -41,7 +41,7 @@ type position struct {
 	Amount      num    `json:"montant"`
 	UnrealPL    num    `json:"plLatentes"`
 	UnrealPLPct num    `json:"plLatentesPct"`
-	DernierMvt  string `json:"dernierMvt"`
+	DernierMvt  string `json:"dernierMvt,omitempty"` // ORD table only
 }
 
 func newPositionsCmd() *cobra.Command {
@@ -56,11 +56,11 @@ func newPositionsCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
-		kind := a.urlKind()
-		if kind != "ord" && kind != "pea" {
-			return out.Fail(fmt.Errorf("le compte %s est de type %q, pas 'ord' ni 'pea'", a.AccountKey, kind))
+		if err := requireKind("positions", a, "pea", "ord"); err != nil {
+			return out.Fail(err)
 		}
-		doc, err := getHTML(ctx, cl, "/compte/"+kind+"/"+a.AccountKey+"/positions")
+		kind := a.urlKind()
+		doc, err := getPage(ctx, cl, "/compte/"+kind+"/"+a.AccountKey+"/positions", "table.c-table.c-table--action")
 		if err != nil {
 			return out.Fail(err)
 		}
@@ -68,35 +68,47 @@ func newPositionsCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
-		// 10 columns, positional. A different width = schema drift → fail
-		// loud (never parse a shifted table silently).
-		if len(tbl.Headers) != 10 {
-			return out.Fail(fmt.Errorf("positions : 10 colonnes attendues (schéma positionnel), %d obtenues : %v", len(tbl.Headers), tbl.Headers))
-		}
 		var ps []position
 		for i, row := range tbl.Rows {
-			if len(row) != 10 {
-				return out.Fail(fmt.Errorf("positions ligne %d : 10 cellules attendues, %d obtenues (dérive de schéma)", i, len(row)))
+			cell := func(h string) (*goquery.Selection, error) {
+				c, err := tbl.Cell(row, h)
+				if err != nil {
+					return nil, fmt.Errorf("positions ligne %d : %w", i, err)
+				}
+				return c, nil
 			}
-			valeur := row[1]
-			coursCell := row[4]
+			var cells [7]*goquery.Selection
+			for k, h := range []string{"Valeur", "Quantité", "Px. Revient", "Cours", "Montant", "+/- Latentes", "+/- %"} {
+				c, err := cell(h)
+				if err != nil {
+					return out.Fail(err)
+				}
+				cells[k] = c
+			}
+			valeur, qty, pru, coursCell, montant, pl, plPct := cells[0], cells[1], cells[2], cells[3], cells[4], cells[5], cells[6]
+			dernier := ""
+			if c, err := tbl.Cell(row, "Dernier Mvt"); err == nil {
+				dernier = htmlx.Clean(c.Text())
+			}
 			lastPrice := htmlx.Clean(coursCell.Find("span.u-ellipsis").First().Text())
-			dayVar := htmlx.Clean(coursCell.Find("span.u-color-big-stone").First().Text())
+			// Day change: u-color-positive / u-color-negative (live), and
+			// u-color-big-stone for an unchanged price.
+			dayVar := htmlx.Clean(coursCell.Find("span.u-color-positive, span.u-color-negative, span.u-color-big-stone").First().Text())
 			p := position{
 				Name:        htmlx.Clean(valeur.Find("span.c-link__label").First().Text()),
 				ISIN:        htmlx.Clean(valeur.Find("span.c-table__mention").First().Text()),
 				Symbol:      symbolFromCours(valeur),
-				Quantity:    mknum(row[2].Find("span.u-ellipsis").First().Text()),
-				PRU:         mknum(row[3].Text()),
+				Quantity:    mknum(qty.Find("span.u-ellipsis").First().Text()),
+				PRU:         mknum(pru.Text()),
 				LastPrice:   mknum(lastPrice),
 				DayVarPct:   mknum(dayVar),
-				Amount:      mknum(row[5].Text()),
-				UnrealPL:    mknum(row[6].Text()),
-				UnrealPLPct: mknum(row[7].Text()),
-				DernierMvt:  htmlx.Clean(row[8].Text()),
+				Amount:      mknum(montant.Text()),
+				UnrealPL:    mknum(pl.Text()),
+				UnrealPLPct: mknum(plPct.Text()),
+				DernierMvt:  dernier,
 			}
 			if p.Name == "" && p.ISIN == "" {
-				return out.Fail(fmt.Errorf("positions ligne %d : nom ET ISIN vides (dérive de schéma cellule 1)", i))
+				return out.Fail(fmt.Errorf("positions ligne %d : nom ET ISIN vides (dérive de schéma, cellule Valeur)", i))
 			}
 			ps = append(ps, p)
 		}

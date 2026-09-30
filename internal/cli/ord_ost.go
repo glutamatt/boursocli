@@ -26,13 +26,18 @@ func newOrdOstCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
-		kind := a.urlKind()
-		if kind != "ord" && kind != "pea" {
-			return out.Fail(fmt.Errorf("le compte %s est de type %q, pas 'ord' ni 'pea'", a.AccountKey, kind))
+		if err := requireKind("ord-ost", a, "pea", "ord"); err != nil {
+			return out.Fail(err)
 		}
-		doc, err := getHTML(ctx, cl, "/compte/"+kind+"/"+a.AccountKey+"/ost")
+		kind := a.urlKind()
+		doc, err := getPage(ctx, cl, "/compte/"+kind+"/"+a.AccountKey+"/ost", "table.c-table.c-table--action")
 		if err != nil {
 			return out.Fail(err)
+		}
+		// No OST at all: the page shows an empty state instead of a table
+		// (checked live 2026-09-30). That is a real, empty answer.
+		if doc.Sel("table.c-table.c-table--action").Length() == 0 && doc.Sel(".c-empty-state").Length() > 0 {
+			return out.Data(map[string]any{"accountKey": a.AccountKey, "ost": []any{}, "empty": true})
 		}
 		tbl, err := doc.ExtractOneTable("table.c-table.c-table--action")
 		if err != nil {

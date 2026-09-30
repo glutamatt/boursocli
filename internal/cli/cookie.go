@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/thomasmarcelin754/boursocli/internal/client"
 	"github.com/thomasmarcelin754/boursocli/internal/htmlx"
+	"github.com/thomasmarcelin754/boursocli/internal/out"
 )
 
 const cookieBase = "https://clients.boursobank.com"
@@ -47,4 +49,31 @@ func getHTML(ctx context.Context, cl *client.Client, path string) (*htmlx.Doc, e
 		return nil, fmt.Errorf("%s → page déconnecté/connexion : la session Chrome BoursoBank est morte. Se reconnecter dans Chrome, puis réessayer (la ré-extraction ne répare pas une session morte)", path)
 	}
 	return doc, nil
+}
+
+// getPage is getHTML for a page that must hold its data block (want, e.g.
+// the documents table) or an explicit empty state (.c-empty-state). The
+// bank sometimes serves such a page without its data block (seen live
+// 2026-09-30 on documents pages, not reproduced): retry once after a pause,
+// then fail loudly — never a silent empty answer.
+func getPage(ctx context.Context, cl *client.Client, path, want string) (*htmlx.Doc, error) {
+	for attempt := 0; ; attempt++ {
+		doc, err := getHTML(ctx, cl, path)
+		if err != nil {
+			return nil, err
+		}
+		if doc.Sel(want).Length() > 0 || doc.Sel(".c-empty-state").Length() > 0 {
+			return doc, nil
+		}
+		title := htmlx.Clean(doc.Sel("title").First().Text())
+		if attempt == 1 {
+			return nil, fmt.Errorf("%s : la page reçue n’a ni %q ni état vide (titre %q) — la banque a servi une autre page ; réessayer dans un moment", path, want, title)
+		}
+		out.Debugf("%s : pas de %q (titre %q) — nouvel essai dans 3 s", path, want, title)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(3 * time.Second):
+		}
+	}
 }

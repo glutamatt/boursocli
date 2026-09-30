@@ -121,7 +121,7 @@ func keysOf(m map[string]json.RawMessage) []string {
 // addAccountFlag binds a reusable --account flag and returns the bound pointer.
 func addAccountFlag(c *cobra.Command) *string {
 	var s string
-	c.Flags().StringVar(&s, "account", "", "accountKey (32-hex) ou type : cav|ord|card")
+	c.Flags().StringVar(&s, "account", "", "accountKey (32-hex) ou type unique : cav|livret|pea|ord|card|av")
 	return &s
 }
 

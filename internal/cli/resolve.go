@@ -28,31 +28,67 @@ type acct struct {
 	Balance         float64 `json:"balance"`
 	Currency        string  `json:"currency"`
 	Name            string  `json:"name"`
-	Type            string  `json:"type"`         // COMPTE | CCREDIT | ORD
-	TypeCategory    string  `json:"typeCategory"` // BANK | CREDITCARD | TRADING
+	Type            string  `json:"type"`         // COMPTE | EPARGNE | CCREDIT | ORD | PEA | FEDEAV | CAR_INSURANCE…
+	TypeCategory    string  `json:"typeCategory"` // BANK | SAVINGS | CREDITCARD | TRADING | INSURANCE
 	BankAccountType string  `json:"bankAccountType"`
+	// LIVRET_A, LDD, LEP, CSL, PEA_PEA_PME, ASSURANCE_VIE… (null for CAV/card)
+	BankAccountTypeExtended string `json:"bankAccountTypeExtended"`
 }
 
-// urlKind maps an account to the cookie-plane URL segment
-// (/compte/<kind>/<key>/). Discriminators are the confirmed
-// `type` / `typeCategory` (the card account has bankAccountType=null, so we
-// must NOT rely on that field alone).
+// urlKind classifies an account; for cav/ord/pea it is also the
+// cookie-plane URL segment (/compte/<kind>/<key>/). Discriminators are
+// `type` / `typeCategory`, checked on a live account (2026-09-30):
+//
+//	COMPTE  / BANK       → cav      EPARGNE / SAVINGS   → livret
+//	PEA     / TRADING    → pea      ORD     / TRADING   → ord
+//	CCREDIT / CREDITCARD → card     FEDEAV  / INSURANCE → av (assurance-vie)
+//	other   / INSURANCE  → assurance (car, home… — no data to read)
+//
+// bankAccountType is NOT a discriminator: it is PLACEMENT_BANCAIRE for
+// livrets and PLACEMENT_FINANCIER for both PEA and assurance-vie.
 func (a acct) urlKind() string {
 	t := strings.ToUpper(a.Type)
 	tc := strings.ToUpper(a.TypeCategory)
-	bat := strings.ToUpper(a.BankAccountType)
+	ext := strings.ToUpper(a.BankAccountTypeExtended)
 	switch {
-	case strings.Contains(bat, "PEA"):
-		return "pea" // ORD-analogous path convention (unverified — no PEA held)
-	case t == "ORD" || tc == "TRADING" || strings.Contains(bat, "PLACEMENT"):
+	case t == "PEA" || (tc == "TRADING" && strings.HasPrefix(ext, "PEA")):
+		return "pea"
+	case t == "ORD" || tc == "TRADING":
 		return "ord"
+	case t == "EPARGNE" || tc == "SAVINGS":
+		return "livret"
+	case tc == "INSURANCE" && (t == "FEDEAV" || ext == "ASSURANCE_VIE"):
+		return "av"
+	case tc == "INSURANCE":
+		return "assurance"
 	case t == "CCREDIT" || tc == "CREDITCARD":
 		return "card"
-	case t == "COMPTE" || tc == "BANK" || strings.Contains(bat, "COURANT"):
+	case t == "COMPTE" || tc == "BANK":
 		return "cav"
 	default:
 		return ""
 	}
+}
+
+// requireKind fails with a pointer to the right command when a command is
+// used on an account kind it cannot read.
+func requireKind(cmd string, a acct, kinds ...string) error {
+	k := a.urlKind()
+	for _, want := range kinds {
+		if k == want {
+			return nil
+		}
+	}
+	hint := ""
+	switch k {
+	case "pea", "ord":
+		hint = " — pour ce compte titres : positions, ord-mouvements, ord-orders, ord-fiscalite, documents"
+	case "livret", "cav":
+		hint = " — pour ce compte : operations, budget-movements, transfers, documents"
+	case "av":
+		hint = " — l’assurance-vie n’est lisible qu’à travers `accounts` (solde) pour l’instant"
+	}
+	return fmt.Errorf("%s : le compte %s (%s) est de type %q, attendu %s%s", cmd, a.AccountKey, a.Name, k, strings.Join(kinds, " ou "), hint)
 }
 
 // resolveAccounts opens a session and returns the live account list (Bearer
@@ -81,11 +117,11 @@ func resolveAccounts(ctx context.Context) (*client.Client, []acct, []byte, error
 }
 
 // pickAccount selects one account by selector: an exact accountKey, or a kind
-// (cav|ord|card|pea). Ambiguous or no match ⇒ loud error listing the choices
+// (cav|livret|pea|ord|card|av). Ambiguous or no match ⇒ loud error listing the choices
 // (never a silent default).
 func pickAccount(accs []acct, selector string) (acct, error) {
 	if selector == "" {
-		return acct{}, fmt.Errorf("--account manquant : fournir un accountKey ou un type (cav|ord|card|pea). %s", choices(accs))
+		return acct{}, fmt.Errorf("--account manquant : fournir un accountKey ou un type (cav|livret|pea|ord|card|av). %s", choices(accs))
 	}
 	var byKey, byKind []acct
 	for _, a := range accs {

@@ -96,6 +96,8 @@ func TestInjectionRefusedBeforeSession(t *testing.T) {
 		{"ord-fiscalite", "--account", "ord", "--year", "x"},
 		{"export", "--account", "cav", "--from", "2026-01-01"},
 		{"budget-movements", "--account", "cav", "--to", "bad"},
+		{"ord-mouvements", "--account", "pea", "--period", "8-2026&form[x]=1"},
+		{"docs", "--section", "bourse", "--from", "1/1/26"},
 	}
 	for _, args := range cases {
 		root := buildRoot()

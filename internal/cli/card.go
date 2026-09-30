@@ -16,19 +16,34 @@ func newCardCmd() *cobra.Command {
 	sel := addAccountFlag(c)
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
 		ctx := cmd.Context()
-		cl, a, err := resolvePicked(ctx, *sel)
+		cl, accs, raw, err := resolveAccounts(ctx)
 		if err != nil {
 			return out.Fail(err)
 		}
-		if a.urlKind() != "card" {
-			return out.Fail(fmt.Errorf("le compte %s est de type %q, pas 'card'", a.AccountKey, a.urlKind()))
-		}
-		body, handled, err := getJSON(ctx, cl, "bank/creditcard/parameterssummary/"+a.AccountKey)
+		a, err := pickAccount(accs, *sel)
 		if err != nil {
 			return out.Fail(err)
 		}
-		if handled {
-			return nil
+		if err := requireKind("card", a, "card"); err != nil {
+			return out.Fail(err)
+		}
+		// The card itself comes with the account list (details.creditCard).
+		// bank/creditcard/parameterssummary/<key> answered 404 "Requête
+		// invalide" on a live account (2026-09-30) for every key tried; its
+		// extra parameters are added only when it answers.
+		cc, err := cardDetails(raw, a.AccountKey)
+		if err != nil {
+			return out.Fail(err)
+		}
+		payload := map[string]json.RawMessage{"creditCard": cc}
+		if b, st, err := cl.API(ctx, "bank/creditcard/parameterssummary/"+a.AccountKey); err == nil && st == 200 && json.Valid(b) {
+			payload["parameters"] = b
+		} else {
+			payload["parametersUnavailable"] = json.RawMessage(`true`)
+		}
+		body, err := json.Marshal(payload)
+		if err != nil {
+			return out.Fail(err)
 		}
 		if out.Format != "table" {
 			return out.Raw(body)
@@ -52,15 +67,38 @@ func newCardCmd() *cobra.Command {
 		if err := json.Unmarshal(body, &p); err != nil {
 			return out.Fail(fmt.Errorf("décodage carte : %w", err))
 		}
-		cc := p.CreditCard
+		card := p.CreditCard
 		t := out.Table{Cols: []string{"name", "number", "holder", "expiration", "situation", "active", "locked", "nfc", "prime"}}
 		t.Rows = append(t.Rows, []string{
-			firstNonEmpty(cc.Label, cc.Name), cc.Number, cc.Holder,
-			cc.ExpirationDate, cc.Situation,
-			fmt.Sprint(cc.IsActive), fmt.Sprint(cc.IsLocked),
-			fmt.Sprint(cc.HasNfc), fmt.Sprint(cc.IsPrime),
+			firstNonEmpty(card.Label, card.Name), card.Number, card.Holder,
+			card.ExpirationDate, card.Situation,
+			fmt.Sprint(card.IsActive), fmt.Sprint(card.IsLocked),
+			fmt.Sprint(card.HasNfc), fmt.Sprint(card.IsPrime),
 		})
 		return out.Data(t)
 	}
 	return c
+}
+
+// cardDetails returns details.creditCard of the account with this key, from
+// the raw bank/account/accounts body.
+func cardDetails(accountsBody []byte, key string) (json.RawMessage, error) {
+	var list []struct {
+		AccountKey string `json:"accountKey"`
+		Details    struct {
+			CreditCard json.RawMessage `json:"creditCard"`
+		} `json:"details"`
+	}
+	if err := json.Unmarshal(accountsBody, &list); err != nil {
+		return nil, fmt.Errorf("décodage bank/account/accounts : %w", err)
+	}
+	for _, x := range list {
+		if x.AccountKey == key {
+			if len(x.Details.CreditCard) == 0 || string(x.Details.CreditCard) == "null" {
+				return nil, fmt.Errorf("card : pas de details.creditCard pour le compte %s", key)
+			}
+			return x.Details.CreditCard, nil
+		}
+	}
+	return nil, fmt.Errorf("card : compte %s absent de bank/account/accounts", key)
 }

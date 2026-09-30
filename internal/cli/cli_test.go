@@ -76,9 +76,31 @@ func TestPickAccountAndURLKind(t *testing.T) {
 }
 
 func TestPEAKindAndHelpers(t *testing.T) {
-	pea := acct{Type: "COMPTE", BankAccountType: "PEA_PME", Name: "PEA"}
-	if pea.urlKind() != "pea" {
-		t.Fatalf("PEA kind: %s", pea.urlKind())
+	// Field combinations seen on a live account (2026-09-30).
+	cases := []struct {
+		a    acct
+		kind string
+	}{
+		{acct{Type: "COMPTE", TypeCategory: "BANK", BankAccountType: "COMPTE_COURANT"}, "cav"},
+		{acct{Type: "EPARGNE", TypeCategory: "SAVINGS", BankAccountType: "PLACEMENT_BANCAIRE", BankAccountTypeExtended: "LIVRET_A"}, "livret"},
+		{acct{Type: "EPARGNE", TypeCategory: "SAVINGS", BankAccountType: "PLACEMENT_BANCAIRE", BankAccountTypeExtended: "LEP"}, "livret"},
+		{acct{Type: "PEA", TypeCategory: "TRADING", BankAccountType: "PLACEMENT_FINANCIER", BankAccountTypeExtended: "PEA_PEA_PME"}, "pea"},
+		{acct{Type: "ORD", TypeCategory: "TRADING"}, "ord"},
+		{acct{Type: "CCREDIT", TypeCategory: "CREDITCARD"}, "card"},
+		{acct{Type: "FEDEAV", TypeCategory: "INSURANCE", BankAccountType: "PLACEMENT_FINANCIER", BankAccountTypeExtended: "ASSURANCE_VIE"}, "av"},
+		{acct{Type: "CAR_INSURANCE", TypeCategory: "INSURANCE"}, "assurance"},
+	}
+	for _, c := range cases {
+		if got := c.a.urlKind(); got != c.kind {
+			t.Errorf("%s/%s/%s → %q, want %q", c.a.Type, c.a.TypeCategory, c.a.BankAccountTypeExtended, got, c.kind)
+		}
+	}
+	pea := cases[3].a
+	if err := requireKind("positions", pea, "pea", "ord"); err != nil {
+		t.Errorf("requireKind refused a PEA: %v", err)
+	}
+	if err := requireKind("operations", pea, "cav", "livret", "card"); err == nil || !strings.Contains(err.Error(), "ord-mouvements") {
+		t.Errorf("operations on a PEA must point to the securities commands: %v", err)
 	}
 	if firstNonEmpty("", "b") != "b" || firstNonEmpty("a", "b") != "a" {
 		t.Fatal("firstNonEmpty")

@@ -22,6 +22,9 @@ func newTransfersCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
+		if err := requireKind("transfers", a, "cav", "livret"); err != nil {
+			return out.Fail(err)
+		}
 		body, handled, err := getJSON(ctx, cl, "bank/cashtransfer/history?accountKey="+a.AccountKey)
 		if err != nil {
 			return out.Fail(err)

@@ -21,6 +21,9 @@ func newOperationsCmd() *cobra.Command {
 		if err != nil {
 			return out.Fail(err)
 		}
+		if err := requireKind("operations", a, "cav", "livret", "card"); err != nil {
+			return out.Fail(err)
+		}
 		body, handled, err := getJSON(ctx, cl, "bank/account/operations/"+a.AccountKey)
 		if err != nil {
 			return out.Fail(err)

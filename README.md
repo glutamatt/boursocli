@@ -103,25 +103,39 @@ stderr, code de sortie `0`/`1`. `--format table` pour les humains,
 ```sh
 boursocli accounts                      # comptes + soldes (JSON)
 boursocli accounts --format table
-boursocli operations --account cav      # opés récentes (Bearer, 30 plus récentes)
-boursocli export --account cav --out ops.csv   # historique complet CSV (nouveau fichier)
-boursocli positions --account ord       # portefeuille titres
-boursocli ord-orders --account ord
-boursocli ord-fiscalite --account ord --year 2026
-boursocli documents --account ord       # relevés / relevés CAV
-boursocli ord-ost --account ord
-boursocli transfers --account cav
-boursocli budgets ; boursocli budget-movements --account cav
-boursocli incidents --account cav
+boursocli operations --account <clé>    # 30 opérations récentes (cav, livret, card)
+boursocli budget-movements --account <clé> --from 01/01/2026
+boursocli positions --account pea       # portefeuille titres + résumé (cumul des versements…)
+boursocli ord-mouvements --account pea --period 7-2026,8-2026   # historique titres/espèces par mois
+boursocli ord-orders --account pea      # ordres récents
+boursocli ord-fiscalite --account pea --year 2026
+boursocli ord-ost --account pea
+boursocli documents --account pea       # relevés, avis… d'un compte
+boursocli docs --section bourse --from 01/01/2026   # avis d'opérés, relevés espèces, frais
+boursocli transfers --account <clé> ; boursocli sepa --account <clé>
+boursocli card --account card ; boursocli budgets ; boursocli incidents --account <clé>
 boursocli version ; boursocli --version
 ```
 
-`--account` prend un `accountKey` (32-hex) ou un type : `cav` | `ord` |
-`card` | `pea`. Ambiguïté ou aucune correspondance → une erreur explicite
-qui liste les choix.
+`--account` prend un `accountKey` (32-hex) ou un type, s'il est unique :
 
-`export --out` crée **un nouveau fichier** : il n'écrase jamais un fichier
-existant et ne suit jamais un lien symbolique.
+| Type | Comptes | `type` / `typeCategory` de la banque |
+|---|---|---|
+| `cav` | comptes courants | `COMPTE` / `BANK` |
+| `livret` | Livret A, LDD, LEP, Bourso+… | `EPARGNE` / `SAVINGS` |
+| `pea` | PEA | `PEA` / `TRADING` |
+| `ord` | compte-titres ordinaire | `ORD` / `TRADING` |
+| `card` | carte | `CCREDIT` / `CREDITCARD` |
+| `av` | assurance-vie (solde seulement) | `FEDEAV` / `INSURANCE` |
+| `assurance` | autres assurances (rien à lire) | `…` / `INSURANCE` |
+
+Ambiguïté ou aucune correspondance → une erreur explicite qui liste les
+choix. Une commande lancée sur un type qu'elle ne sait pas lire le dit, et
+indique la bonne commande.
+
+**`export` est cassé** (constaté le 2026-09-30) : la banque exige désormais
+un POST avec jeton CSRF pour l'export CSV, et ce CLI ne fait que des GET.
+En attendant : `operations`, `budget-movements`, `ord-mouvements --period`.
 
 Les échecs sont toujours explicites : un non-200, une erreur de décodage ou
 une dérive de schéma sort en `1` avec `{"ok":false,"error":…}`.
@@ -197,10 +211,13 @@ l'agent.
 
 ## État
 
-- 21 commandes de lecture, validées sur un compte réel par l'auteur
-  d'origine (2026-05-20). Le durcissement de ce fork est couvert par des
-  tests hors ligne (serveurs httptest, faux profil Chrome) ; revalidez sur
-  votre compte après installation.
+- 21 commandes de lecture. Revalidées sur un compte réel le 2026-09-30
+  (comptes courants, livrets, PEA, carte, assurance-vie) : toutes répondent
+  sauf `export` (voir plus haut). Le durcissement est aussi couvert par des
+  tests hors ligne (serveurs httptest, faux profil Chrome).
+- Limites connues : `operations` et `budget-movements` s'arrêtent à 30
+  lignes (la suite se charge par un curseur non encore compris) ;
+  `ord-orders` ne renvoie que les ordres récents.
 - Pas de virement, ni d'aucune écriture : c'est voulu.
 - Ce dépôt ne contient que le code du client : pas de spécification d'API
   tierce.
