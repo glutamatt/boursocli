@@ -26,6 +26,11 @@ func newDocsCmd() *cobra.Command {
 	c.Flags().StringVar(&section, "section", "bourse", "section : ifu | bourse | releves | banque")
 	c.Flags().StringVar(&year, "year", "", "année (IFU uniquement, ex: 2025)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if year != "" {
+			if err := validYear("--year", year); err != nil {
+				return out.Fail(err)
+			}
+		}
 		ctx := cmd.Context()
 		cl, _, _, err := session(ctx)
 		if err != nil {

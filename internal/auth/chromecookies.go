@@ -1,22 +1,35 @@
 // Package auth: dual-domain cookie extraction from the local Chrome profile
 // (no manual paste) + dashboard bearer bootstrap. Secrets never logged.
+//
+// The decryption code is the vendored sweet-cookie (./sweetcookie, embedded
+// in the binary): no npm, no registry, no cache folder. Each extraction runs
+// node in a fresh private folder with a minimal environment, and deletes that
+// folder when node exits — also when node is killed on timeout.
 package auth
 
 import (
 	"bytes"
 	"context"
-	_ "embed"
+	"embed"
 	"encoding/json"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
 	"time"
 )
 
 //go:embed load.mjs
 var loadScript []byte
+
+//go:embed sweetcookie
+var sweetCookie embed.FS
 
 // The two registrable domains BoursoBank spans. Banking works with the
 // boursobank jar alone; securities/ORD/bourse REQUIRE the boursorama jar too
@@ -26,6 +39,11 @@ var cookieTargets = []struct{ host, url string }{
 	{"clients.boursorama.com", "https://clients.boursorama.com/"},
 }
 
+// node:sqlite loads without a flag from Node 22.13.
+const minNodeMajor, minNodeMinor = 22, 13
+
+const runTimeout = 20 * time.Second
+
 type scriptIn struct {
 	TargetURL     string `json:"target_url"`
 	ChromeProfile string `json:"chrome_profile"`
@@ -34,44 +52,63 @@ type scriptIn struct {
 type scriptOut struct {
 	CookieHeader string `json:"cookie_header"`
 	CookieCount  int    `json:"cookie_count"`
+	Profile      string `json:"profile"`
 	Error        string `json:"error"`
 }
 
-// ExtractCookies runs the embedded Node helper once per domain and returns the
-// per-host cookie map (to store in config.CookiesByHost). cacheDir holds the
-// one-off npm install of @steipete/sweet-cookie. Requires Node ≥22.
-func ExtractCookies(ctx context.Context, chromeProfile, cacheDir string, log io.Writer) (map[string]string, error) {
-	if _, err := exec.LookPath("node"); err != nil {
-		return nil, fmt.Errorf("node introuvable (requis pour chromecookies ; installer Node ≥22 ou utiliser un override cookie via --config)")
+// Extracted is the result of one extraction.
+type Extracted struct {
+	// CookiesByHost maps "clients.boursobank.com" / "clients.boursorama.com"
+	// to a Cookie header value. Held in memory only, never written to disk.
+	CookiesByHost map[string]string
+	// Profile is the Chrome profile the cookies came from: the one asked
+	// for, or the one the auto-pick chose (a directory path). The caller
+	// pins it so the all-profile scan runs once.
+	Profile string
+}
+
+// ExtractCookies runs the embedded node helper once per domain. Requires
+// Node ≥22.13 on PATH.
+func ExtractCookies(ctx context.Context, chromeProfile string, log io.Writer) (Extracted, error) {
+	nodePath, err := exec.LookPath("node")
+	if err != nil {
+		return Extracted{}, fmt.Errorf("node introuvable (requis pour l’extraction des cookies Chrome ; installer Node ≥%d.%d)", minNodeMajor, minNodeMinor)
 	}
-	if _, err := exec.LookPath("npm"); err != nil {
-		return nil, fmt.Errorf("npm introuvable (requis pour l’amorçage @steipete/sweet-cookie)")
+	runDir, err := os.MkdirTemp("", "boursocli-auth-")
+	if err != nil {
+		return Extracted{}, err
 	}
-	if err := ensureNpm(ctx, cacheDir, log); err != nil {
-		return nil, err
+	defer func() { _ = os.RemoveAll(runDir) }()
+	if err := materialize(runDir); err != nil {
+		return Extracted{}, fmt.Errorf("préparation du dossier d’extraction : %w", err)
 	}
-	scriptPath := filepath.Join(cacheDir, "load.mjs")
-	if err := os.WriteFile(scriptPath, loadScript, 0o600); err != nil {
-		return nil, err
+	if err := checkNodeVersion(ctx, nodePath, runDir); err != nil {
+		return Extracted{}, err
 	}
-	res := make(map[string]string, len(cookieTargets))
+
+	res := Extracted{CookiesByHost: make(map[string]string, len(cookieTargets)), Profile: chromeProfile}
 	for _, t := range cookieTargets {
-		hdr, err := runOne(ctx, cacheDir, scriptPath, chromeProfile, t.url, log)
+		o, err := runOne(ctx, nodePath, runDir, res.Profile, t.url, log)
 		if err != nil {
 			// boursorama jar may be absent if the user never visited bourse;
 			// boursobank is mandatory.
 			if t.host == "clients.boursobank.com" {
-				return nil, fmt.Errorf("échec de l’extraction des cookies pour %s : %w (Chrome est-il connecté à BoursoBank ?)", t.host, err)
+				return Extracted{}, fmt.Errorf("échec de l’extraction des cookies pour %s : %w (Chrome est-il connecté à BoursoBank ?)", t.host, err)
 			}
-			_, _ = fmt.Fprintf(orDiscard(log), "avert : aucun cookie pour %s (%v) — titres/ORD indisponibles tant que vous n.aurez pas visité l.espace bourse dans Chrome\n", t.host, err)
+			_, _ = fmt.Fprintf(orDiscard(log), "avert : aucun cookie pour %s (%v) — titres/ORD indisponibles tant que vous n’aurez pas visité l’espace bourse dans Chrome\n", t.host, err)
 			continue
 		}
-		if hdr != "" {
-			res[t.host] = hdr
+		// Both jars must come from the same profile: the first call may
+		// auto-pick one, the second reuses it.
+		if res.Profile == "" {
+			res.Profile = o.Profile
+		}
+		if o.CookieHeader != "" {
+			res.CookiesByHost[t.host] = o.CookieHeader
 		}
 	}
-	if res["clients.boursobank.com"] == "" {
-		return nil, fmt.Errorf("aucun cookie de session BoursoBank dans le profil Chrome %q — se connecter d’abord à clients.boursobank.com dans Chrome", chromeProfile)
+	if res.CookiesByHost["clients.boursobank.com"] == "" {
+		return Extracted{}, fmt.Errorf("aucun cookie de session BoursoBank dans le profil Chrome %q — se connecter d’abord à clients.boursobank.com dans Chrome", chromeProfile)
 	}
 	return res, nil
 }
@@ -92,66 +129,159 @@ func MergedHeader(byHost map[string]string) string {
 	return buf.String()
 }
 
-func ensureNpm(ctx context.Context, dir string, log io.Writer) error {
-	if _, err := os.Stat(filepath.Join(dir, "node_modules", "@steipete", "sweet-cookie", "package.json")); err == nil {
-		return nil
-	}
-	if err := os.MkdirAll(dir, 0o750); err != nil {
+// materialize writes load.mjs and the vendored sweet-cookie into runDir
+// (owner-only). load.mjs imports it by relative path: no node_modules.
+//
+//	runDir/package.json          {"type":"module"}
+//	runDir/load.mjs
+//	runDir/sweet-cookie/...      vendored files
+//	runDir/tmp/                  TMPDIR for node (DB snapshots)
+func materialize(runDir string) error {
+	if err := os.WriteFile(filepath.Join(runDir, "package.json"), []byte(`{"private":true,"type":"module"}`+"\n"), 0o600); err != nil {
 		return err
 	}
-	pkg := `{"private":true,"type":"module","dependencies":{"@steipete/sweet-cookie":"0.2.0"}}` + "\n"
-	if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(pkg), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(runDir, "load.mjs"), loadScript, 0o600); err != nil {
 		return err
 	}
-	c, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	if err := os.Mkdir(filepath.Join(runDir, "tmp"), 0o700); err != nil {
+		return err
+	}
+	dst := filepath.Join(runDir, "sweet-cookie")
+	return fs.WalkDir(sweetCookie, "sweetcookie", func(p string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel := strings.TrimPrefix(p, "sweetcookie")
+		target := filepath.Join(dst, filepath.FromSlash(rel))
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o700)
+		}
+		b, err := sweetCookie.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o600)
+	})
+}
+
+var reNodeVersion = regexp.MustCompile(`^v(\d+)\.(\d+)\.`)
+
+func checkNodeVersion(ctx context.Context, nodePath, runDir string) error {
+	c, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(c, "npm", "install", "--silent", "--no-progress", "--no-fund", "--no-audit")
-	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "npm_config_loglevel=error")
-	cmd.Stdout = io.Discard
-	cmd.Stderr = orDiscard(log)
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("npm install @steipete/sweet-cookie : %w", err)
+	cmd := exec.CommandContext(c, nodePath, "--version")
+	cmd.Dir = runDir
+	cmd.Env = nodeEnv(filepath.Join(runDir, "tmp"), "")
+	b, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("node --version : %w", err)
+	}
+	v := strings.TrimSpace(string(b))
+	m := reNodeVersion.FindStringSubmatch(v)
+	if m == nil {
+		return fmt.Errorf("version de node illisible : %q", v)
+	}
+	major, _ := strconv.Atoi(m[1])
+	minor, _ := strconv.Atoi(m[2])
+	if major < minNodeMajor || (major == minNodeMajor && minor < minNodeMinor) {
+		return fmt.Errorf("node %s trop ancien : Node ≥%d.%d requis (node:sqlite sans flag)", v, minNodeMajor, minNodeMinor)
 	}
 	return nil
 }
 
-func runOne(ctx context.Context, cacheDir, scriptPath, profile, targetURL string, log io.Writer) (string, error) {
-	tmp, err := os.MkdirTemp("", "bb-ckout-")
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = os.RemoveAll(tmp) }()
-	outPath := filepath.Join(tmp, "out.json")
+func runOne(ctx context.Context, nodePath, runDir, profile, targetURL string, log io.Writer) (scriptOut, error) {
+	outPath := filepath.Join(runDir, "out.json")
+	_ = os.Remove(outPath) // never read the previous target's result
 	in, err := json.Marshal(scriptIn{TargetURL: targetURL, ChromeProfile: profile, TimeoutMillis: 8000})
 	if err != nil {
-		return "", err
+		return scriptOut{}, err
 	}
-	c, cancel := context.WithTimeout(ctx, 20*time.Second)
+	c, cancel := context.WithTimeout(ctx, runTimeout)
 	defer cancel()
-	//nolint:gosec // scriptPath is our own go:embed'd load.mjs written to a private temp dir — not user input
-	cmd := exec.CommandContext(c, "node", scriptPath)
-	cmd.Dir = cacheDir
-	cmd.Env = append(os.Environ(), "BOURSOBANK_OUTPUT_PATH="+outPath, "npm_config_loglevel=error")
+	// --no-addons: sweet-cookie needs no native module, so none may load.
+	// --disallow-code-generation-from-strings: no eval / new Function.
+	//nolint:gosec // nodePath from LookPath; the script is our own embedded load.mjs in a private MkdirTemp dir
+	cmd := exec.CommandContext(c, nodePath, "--no-addons", "--disallow-code-generation-from-strings", filepath.Join(runDir, "load.mjs"))
+	cmd.Dir = runDir
+	cmd.Env = nodeEnv(filepath.Join(runDir, "tmp"), outPath)
 	cmd.Stdin = bytes.NewReader(in)
 	cmd.Stdout = io.Discard
 	cmd.Stderr = orDiscard(log)
+	// A keyring helper (secret-tool…) killed with node may keep stderr open:
+	// do not wait for it forever.
+	cmd.WaitDelay = 2 * time.Second
 	runErr := cmd.Run()
 	b, readErr := os.ReadFile(outPath) //nolint:gosec // outPath is our own file in a private os.MkdirTemp dir
 	if readErr != nil {
 		if runErr != nil {
-			return "", runErr
+			return scriptOut{}, runErr
 		}
-		return "", readErr
+		return scriptOut{}, readErr
 	}
 	var o scriptOut
 	if err := json.Unmarshal(b, &o); err != nil {
-		return "", err
+		return scriptOut{}, err
 	}
 	if o.Error != "" {
-		return "", fmt.Errorf("%s", o.Error)
+		return scriptOut{}, fmt.Errorf("%s", o.Error)
 	}
-	return o.CookieHeader, nil
+	if strings.ContainsAny(o.CookieHeader, "\r\n") {
+		return scriptOut{}, fmt.Errorf("en-tête Cookie invalide (retour à la ligne)")
+	}
+	return o, nil
+}
+
+// nodeEnv is the WHOLE environment node sees; nothing else is inherited.
+// NODE_OPTIONS / NODE_PATH could load other code, SWEET_COOKIE_* would
+// change what sweet-cookie reads (browsers, keyring, even a fixed "Safe
+// Storage" password), and a user PATH could shadow secret-tool / security.
+func nodeEnv(tmpDir, outPath string) []string {
+	keep := []string{
+		"HOME", "USER", "LOGNAME", "LANG", "LC_ALL",
+		// Linux keyring access (libsecret over D-Bus, or KWallet) and the
+		// Chrome profile location.
+		"XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP",
+		"DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY",
+		"KDE_FULL_SESSION", "KDE_SESSION_VERSION",
+	}
+	if runtime.GOOS == "windows" {
+		keep = append(keep, "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
+			"USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATH", "PATHEXT")
+	}
+	env := make([]string, 0, len(keep)+5)
+	for _, k := range keep {
+		if v, ok := os.LookupEnv(k); ok {
+			env = append(env, k+"="+v)
+		}
+	}
+	if runtime.GOOS != "windows" {
+		// secret-tool, kwallet-query, dbus-send (Linux) and security (macOS)
+		// live in the system folders.
+		env = append(env, "PATH=/usr/bin:/bin:/usr/sbin:/sbin")
+	}
+	env = append(env, "TMPDIR="+tmpDir, "TMP="+tmpDir, "TEMP="+tmpDir)
+	if outPath != "" {
+		env = append(env, "BOURSOBANK_OUTPUT_PATH="+outPath)
+	}
+	return env
+}
+
+// vendoredFiles lists the embedded sweet-cookie files (slash paths relative
+// to the sweetcookie folder). Used by the integrity test.
+func vendoredFiles() (map[string][]byte, error) {
+	files := map[string][]byte{}
+	err := fs.WalkDir(sweetCookie, "sweetcookie", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		b, err := sweetCookie.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		files[strings.TrimPrefix(p, "sweetcookie/")] = b
+		return nil
+	})
+	return files, err
 }
 
 func orDiscard(w io.Writer) io.Writer {

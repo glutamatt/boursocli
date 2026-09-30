@@ -24,6 +24,11 @@ func newBudgetsCmd() *cobra.Command {
 	var id string
 	c.Flags().StringVar(&id, "id", "", "id de budget → détail complet via pfm/budget/budget/<id> (singulier)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if id != "" {
+			if err := validID("--id", id); err != nil {
+				return out.Fail(err)
+			}
+		}
 		ctx := cmd.Context()
 		cl, _, _, err := session(ctx)
 		if err != nil {

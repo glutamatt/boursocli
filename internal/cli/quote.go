@@ -22,6 +22,9 @@ func newQuoteCmd() *cobra.Command {
 		if symbol == "" {
 			return out.Fail(fmt.Errorf("--symbol requis (ex: 1rPENGI pour ENGIE, 1rPSTMPA pour STMicro)"))
 		}
+		if err := validSymbol("--symbol", symbol); err != nil {
+			return out.Fail(err)
+		}
 		ctx := cmd.Context()
 		cl, _, _, err := session(ctx)
 		if err != nil {

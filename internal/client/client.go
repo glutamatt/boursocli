@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -33,17 +34,32 @@ var (
 
 // Client holds the merged dual-domain cookie header + scraped bearer/userHash.
 type Client struct {
-	hc       *http.Client
-	cookie   string // merged .boursobank.com + .boursorama.com jars
-	ua       string
+	hc     *http.Client
+	cookie string // merged .boursobank.com + .boursorama.com jars (memory only)
+	ua     string
+	// cookieSource loads the cookie jar on the first cookie-plane request
+	// (bearer-only commands never touch the Chrome cookie store).
+	cookieSource func(context.Context) (string, error)
+	// allowRefresh lets the transport send the one non-GET request
+	// (POST session/auth/refresh). Off by default: the CLI only reads.
+	allowRefresh bool
+	// recover is called once when the bank reports an expired session in
+	// the middle of a command (see resilientGet). nil = no recovery.
+	recover  func(context.Context) error
 	Bearer   string
 	UserHash string
 }
 
+// ErrBearerRejected means the bank refused the bearer (session expired or
+// replaced). Any other Probe error is a network/bank problem, not a reason
+// to touch the Chrome cookie store.
+var ErrBearerRejected = errors.New("bearer refusé par la banque")
+
 // New builds the audited transport: proxy-from-env, TLS>=1.2, hard timeout,
 // HTTP/2 disabled (some Bourso frontends hang on H2 from Go), NO cookie jar
 // (we send the merged Cookie header manually — the dual-domain requirement),
-// transparent gzip (Go default).
+// transparent gzip (Go default). Every request, redirects included, goes
+// through the egress guard (see egress.go).
 func New(mergedCookie, userAgent string) *Client {
 	if userAgent == "" {
 		userAgent = defaultUA
@@ -55,27 +71,29 @@ func New(mergedCookie, userAgent string) *Client {
 		ForceAttemptHTTP2: false,
 	}
 	c := &Client{
-		hc:     &http.Client{Timeout: 20 * time.Second, Transport: tr},
 		cookie: mergedCookie,
 		ua:     userAgent,
 	}
+	c.hc = &http.Client{Timeout: 20 * time.Second, Transport: &guard{next: tr, c: c}}
 	// We carry no cookie jar (deliberate, dual-domain). Go DROPS the
 	// Cookie header on a cross-host redirect, so the cookie-plane export
 	// chain (clients.boursobank.com → api.boursobank.com/files/
 	// download.phtml) lands unauthenticated → 401. Re-attach the session
-	// cookie + UA — but ONLY when the redirect target is a trusted
-	// BoursoBank/Boursorama host, so a hostile 302 can never exfiltrate the
-	// bank session cookie (gosec G119). Bounded by the 10-redirect default.
-	c.hc.CheckRedirect = func(req *http.Request, _ []*http.Request) error {
+	// cookie — but ONLY on a cookie-plane request (the first hop carried
+	// the cookie) and ONLY to an allow-listed HTTPS host. The guard then
+	// refuses any hop outside the allow-list before it is sent.
+	c.hc.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return errors.New("trop de redirections")
+		}
+		if err := egress.check(req.URL); err != nil {
+			return err
+		}
 		req.Header.Set("user-agent", c.ua)
-		if isTrustedHost(req.URL.Hostname()) {
-			//nolint:gosec // G119: re-attached ONLY to allow-listed boursobank/boursorama hosts (isTrustedHost); the documented export redirect chain requires "the same cookie"
+		if via[0].Header.Get("cookie") != "" {
+			//nolint:gosec // G119: only on cookie-plane requests, only to allow-listed HTTPS hosts (egress.check above)
 			req.Header.Set("cookie", c.cookie)
 		} else {
-			// Go forwards the initial explicit Cookie header to redirect
-			// targets it considers same-host (ignoring port). Actively
-			// STRIP it on any non-trusted host so a hostile 302 cannot
-			// exfiltrate the bank session cookie.
 			req.Header.Del("cookie")
 		}
 		return nil
@@ -83,16 +101,30 @@ func New(mergedCookie, userAgent string) *Client {
 	return c
 }
 
-// isTrustedHost reports whether h is a BoursoBank/Boursorama host the session
-// cookie may be sent to (the only domains involved in the documented flows).
-func isTrustedHost(h string) bool {
-	h = strings.ToLower(h)
-	for _, d := range []string{".boursobank.com", ".boursorama.com"} {
-		if h == d[1:] || strings.HasSuffix(h, d) {
-			return true
-		}
+// SetCookieSource installs the lazy cookie loader (see cookieSource).
+func (c *Client) SetCookieSource(f func(context.Context) (string, error)) { c.cookieSource = f }
+
+// SetCookie replaces the cookie jar ("" = load again from the source on
+// the next cookie-plane request).
+func (c *Client) SetCookie(merged string) { c.cookie = merged }
+
+// AllowRefresh enables the POST session/auth/refresh request.
+func (c *Client) AllowRefresh(on bool) { c.allowRefresh = on }
+
+// SetRecover installs the mid-command session recovery (see recover).
+func (c *Client) SetRecover(f func(context.Context) error) { c.recover = f }
+
+// ensureCookie loads the cookie jar if it is not loaded yet.
+func (c *Client) ensureCookie(ctx context.Context) error {
+	if c.cookie != "" || c.cookieSource == nil {
+		return nil
 	}
-	return false
+	ck, err := c.cookieSource(ctx)
+	if err != nil {
+		return err
+	}
+	c.cookie = ck
+	return nil
 }
 
 // Bootstrap GETs the dashboard with the merged cookie and scrapes the 24h
@@ -203,9 +235,16 @@ func (c *Client) BearerExp() time.Time {
 
 // Refresh renews the server-side session WITHOUT re-scraping the dashboard
 // Clean reconnect path: POST _public_/session/auth/refresh,
-// body {}, cookie plane, no bearer. 200 = renewed.
+// body {}, cookie plane, no bearer. 200 = renewed. It is the only non-GET
+// request: the guard refuses it unless AllowRefresh(true).
 func (c *Client) Refresh(ctx context.Context) error {
-	u := apiBase + "/_public_/session/auth/refresh"
+	if !c.allowRefresh {
+		return errRefreshDisabled
+	}
+	if err := c.ensureCookie(ctx); err != nil {
+		return err
+	}
+	u := apiBase + refreshPath
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, strings.NewReader("{}"))
 	if err != nil {
 		return err
@@ -228,18 +267,26 @@ func (c *Client) Refresh(ctx context.Context) error {
 }
 
 // Probe checks whether the current bearer is still accepted by the server.
-// A lightweight GET on a known-cheap endpoint; returns nil if 200, an error
-// on 401/10006 (session dead) or any other failure. No retry, no re-auth.
+// A lightweight GET on a known-cheap endpoint; returns nil if 200,
+// ErrBearerRejected on an auth refusal (401 that is not an edge throttle,
+// or 10006), and a plain error on anything else (network, throttle, 5xx).
+// No retry, no re-auth.
 func (c *Client) Probe(ctx context.Context) error {
 	u := fmt.Sprintf("%s/_user_/_%s_/customer/timeline/unreadcount?_host=clients.boursobank.com", apiBase, c.UserHash)
-	_, st, _, err := c.do(ctx, http.MethodGet, u, "application/json", true)
+	b, st, _, err := c.do(ctx, http.MethodGet, u, "application/json", true)
 	if err != nil {
 		return err
 	}
-	if st != 200 {
+	switch {
+	case st == 200:
+		return nil
+	case isThrottled(st, b):
+		return fmt.Errorf("probe → HTTP %d (throttle en bordure, la session n’est pas en cause — réessayer plus tard)", st)
+	case st == 401 || st == 403 || isBankSessionExpired(st, b):
+		return fmt.Errorf("%w (probe → HTTP %d)", ErrBearerRejected, st)
+	default:
 		return fmt.Errorf("probe → HTTP %d", st)
 	}
-	return nil
 }
 
 // API calls a Bearer-plane endpoint: GET api.boursobank.com/.../_user_/_<hash>_/<resource>.
@@ -275,12 +322,14 @@ func (c *Client) CookieOnce(ctx context.Context, fullURL string) ([]byte, int, e
 // recovery loops:
 //   - throttle (Varnish "401 V"/"Not Authorized", or 503): exponential
 //     backoff + jitter, NO re-auth (the session is fine) — max 3 tries.
-//   - bank session 401/10006 (bearer plane): one Refresh() then one retry.
+//   - bank session 401/10006 (bearer plane): one recover() (set by the
+//     caller: a new bearer from the live Chrome session, or Refresh() when
+//     the owner allowed it) then one retry.
 //
 // Bounded and serial; never retries on ctx cancellation.
 func (c *Client) resilientGet(ctx context.Context, url, accept string, bearer bool) ([]byte, int, error) {
 	const maxThrottle = 3
-	refreshed := false
+	recovered := false
 	for attempt := 0; ; attempt++ {
 		b, st, _, err := c.do(ctx, http.MethodGet, url, accept, bearer)
 		if err != nil {
@@ -295,12 +344,12 @@ func (c *Client) resilientGet(ctx context.Context, url, accept string, bearer bo
 			}
 			continue
 		}
-		if bearer && !refreshed && isBankSessionExpired(st, b) {
-			refreshed = true
-			if rerr := c.Refresh(ctx); rerr == nil {
+		if bearer && !recovered && c.recover != nil && isBankSessionExpired(st, b) {
+			recovered = true
+			if rerr := c.recover(ctx); rerr == nil {
 				continue // one retry with the renewed session
 			}
-			// refresh failed → return the original response; the caller's
+			// recovery failed → return the original response; the caller's
 			// taxonomy emits the loud re-login instruction.
 		}
 		return b, st, nil
@@ -349,6 +398,9 @@ func (c *Client) do(ctx context.Context, method, url, accept string, bearer bool
 		req.Header.Set("authorization", "Bearer "+c.Bearer)
 		req.Header.Set("x-referer-feature-id", "_._.web_fr_front_20")
 	} else {
+		if err := c.ensureCookie(ctx); err != nil {
+			return nil, 0, nil, err
+		}
 		req.Header.Set("cookie", c.cookie)
 		req.Header.Set("x-requested-with", "XMLHttpRequest")
 	}

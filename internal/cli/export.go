@@ -38,8 +38,17 @@ func newExportCmd() *cobra.Command {
 	var from, to, outFile string
 	c.Flags().StringVar(&from, "from", "", "date de début jj/mm/AAAA (défaut : il y a 3 ans)")
 	c.Flags().StringVar(&to, "to", "", "date de fin jj/mm/AAAA (défaut : aujourd’hui)")
-	c.Flags().StringVar(&outFile, "out", "", "écrire le CSV ici (défaut : stdout)")
+	c.Flags().StringVar(&outFile, "out", "", "écrire le CSV dans ce NOUVEAU fichier (jamais d’écrasement ; défaut : stdout)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if err := validDateFlags(from, to); err != nil {
+			return out.Fail(err)
+		}
+		if outFile != "" {
+			// Fail before the download; writeNewFile still enforces it.
+			if _, err := os.Lstat(outFile); err == nil {
+				return out.Fail(fmt.Errorf("--out %s existe déjà : choisir un nouveau nom (le CLI n’écrase jamais un fichier)", outFile))
+			}
+		}
 		ctx := cmd.Context()
 		cl, a, err := resolvePicked(ctx, *sel)
 		if err != nil {
@@ -66,7 +75,7 @@ func newExportCmd() *cobra.Command {
 		if status == 401 {
 			return out.Fail(fmt.Errorf("entrée export → HTTP 401 (corps vide = probablement throttle Varnish en bordure, PAS une mort d’auth — ralentir et réessayer ; la session est valide). Si ça persiste, se reconnecter dans Chrome"))
 		}
-		if status != 200 && status != 302 {
+		if status != 200 {
 			return out.Fail(fmt.Errorf("entrée export → HTTP %d : %s", status, snippet(body)))
 		}
 
@@ -97,7 +106,7 @@ func newExportCmd() *cobra.Command {
 			_, werr := os.Stdout.Write(csv)
 			return werr
 		}
-		if err := os.WriteFile(outFile, csv, 0o600); err != nil {
+		if err := writeNewFile(outFile, csv); err != nil {
 			return out.Fail(err)
 		}
 		return out.OK("export", map[string]any{
@@ -124,4 +133,24 @@ func validateCSV(b []byte) error {
 		return fmt.Errorf("export : en-tête CSV non conforme (dérive de schéma).\n obtenu : %s\nattendu : %s", got, csvHeader)
 	}
 	return nil
+}
+
+// writeNewFile creates path (0600) and refuses to touch anything that is
+// already there: O_EXCL fails on an existing file and on any symlink, even a
+// dangling one, so the export can neither overwrite a user file nor be
+// redirected to a place someone else reads.
+func writeNewFile(path string, b []byte) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) //nolint:gosec // the caller's explicit --out; O_EXCL, never overwrites
+	if err != nil {
+		if os.IsExist(err) {
+			return fmt.Errorf("--out %s existe déjà : choisir un nouveau nom (le CLI n’écrase jamais un fichier)", path)
+		}
+		return err
+	}
+	if _, err := f.Write(b); err != nil {
+		_ = f.Close()
+		_ = os.Remove(path)
+		return err
+	}
+	return f.Close()
 }

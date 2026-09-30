@@ -9,6 +9,17 @@ import (
 	"time"
 )
 
+// privateDir is a 0700 folder: t.TempDir() follows the umask, and the
+// config refuses a folder others can read.
+func privateDir(t *testing.T) string {
+	t.Helper()
+	d := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(d, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	return d
+}
+
 func TestPathOverride(t *testing.T) {
 	if p, _ := Path("/x/y.json"); p != "/x/y.json" {
 		t.Fatalf("override ignored: %s", p)
@@ -19,11 +30,9 @@ func TestPathOverride(t *testing.T) {
 }
 
 func TestSaveAtomicAndLoad(t *testing.T) {
-	dir := t.TempDir()
+	dir := privateDir(t)
 	p := filepath.Join(dir, "sub", "config.json")
-	c := &Config{
-		Bearer: "JWT", UserHash: "h", CookiesByHost: map[string]string{"a": "v"},
-	}
+	c := &Config{Bearer: "JWT", UserHash: "h"}
 	if err := c.Save(p); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -36,8 +45,8 @@ func TestSaveAtomicAndLoad(t *testing.T) {
 	if di.Mode().Perm() != 0o700 {
 		t.Fatalf("dir perm = %o, want 700", di.Mode().Perm())
 	}
-	if _, err := os.Stat(p + ".tmp"); !os.IsNotExist(err) {
-		t.Fatal(".tmp not cleaned (rename failed?)")
+	if left, _ := filepath.Glob(filepath.Join(filepath.Dir(p), ".config-*.tmp")); len(left) != 0 {
+		t.Fatalf("temp file not cleaned: %v", left)
 	}
 	got, err := Load(p)
 	if err != nil || got.Bearer != "JWT" || got.Version != Version {
@@ -45,46 +54,26 @@ func TestSaveAtomicAndLoad(t *testing.T) {
 	}
 	// missing file → empty config, no error
 	empty, err := Load(filepath.Join(dir, "nope.json"))
-	if err != nil || empty.CookiesByHost == nil {
+	if err != nil || empty.Version != Version || empty.Bearer != "" {
 		t.Fatalf("Load(missing): %+v %v", empty, err)
 	}
 }
 
 func TestRedactedHidesSecrets(t *testing.T) {
-	c := &Config{Bearer: "supersecretjwt", UserHash: "abc", CookiesByHost: map[string]string{"h": "cookieval"}}
+	c := &Config{Bearer: "supersecretjwt", UserHash: "abc"}
 	r := c.Redacted()
 	blob, err := json.Marshal(r)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(blob)
-	for _, leak := range []string{"supersecretjwt", "cookieval", "abc"} {
+	for _, leak := range []string{"supersecretjwt", "abc"} {
 		if strings.Contains(s, leak) {
 			t.Fatalf("Redacted leaked %q: %s", leak, s)
 		}
 	}
 	if !strings.Contains(s, "***") {
 		t.Fatalf("expected redaction markers: %s", s)
-	}
-}
-
-func TestHasCookie(t *testing.T) {
-	cases := []struct {
-		hdr, name string
-		want      bool
-	}{
-		{"rememberme=abc; sid=1", "rememberme", true},
-		{"sid=1; RememberMe=xyz", "rememberme", true}, // case-insensitive name
-		{"sid=1; other=2", "rememberme", false},
-		{"", "rememberme", false},
-		{"rememberme_x=1", "rememberme", false}, // must not prefix-match
-		{"x=rememberme=1", "rememberme", false}, // value containing the name ≠ a cookie named it
-		{"  rememberme = v ; a=b", "rememberme", true},
-	}
-	for _, c := range cases {
-		if got := hasCookie(c.hdr, c.name); got != c.want {
-			t.Fatalf("hasCookie(%q,%q)=%v want %v", c.hdr, c.name, got, c.want)
-		}
 	}
 }
 
@@ -124,20 +113,38 @@ func TestBearerLikelyExpired(t *testing.T) {
 	}
 }
 
-func TestRedactedSessionAnchorsNoLeak(t *testing.T) {
-	c := &Config{
-		Bearer:        "supersecretjwt",
-		CookiesByHost: map[string]string{"clients.boursobank.com": "rememberme=SECRETVAL; sid=1"},
+// A v1 config held the Chrome cookie jars (incl. rememberme). Loading it
+// must remove them from disk at once and keep the rest.
+func TestLoadScrubsLegacyCookies(t *testing.T) {
+	dir := privateDir(t)
+	p := filepath.Join(dir, "config.json")
+	v1 := `{"version":1,"chrome_profile":"Default","cookies_by_host":{"clients.boursobank.com":"rememberme=SECRETVAL; sid=1"},"bearer":"JWT"}`
+	if err := os.WriteFile(p, []byte(v1), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	blob, err := json.Marshal(c.Redacted())
+	c, err := Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if c.Bearer != "JWT" || c.ChromeProfile != "Default" {
+		t.Fatalf("settings lost: %+v", c)
+	}
+	b, err := os.ReadFile(p) //nolint:gosec // G304: test temp file
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := string(blob)
-	if strings.Contains(s, "SECRETVAL") || strings.Contains(s, "supersecretjwt") {
-		t.Fatalf("session_anchors leaked a value: %s", s)
+	if strings.Contains(string(b), "SECRETVAL") || strings.Contains(string(b), "cookies_by_host") {
+		t.Fatalf("legacy cookies still on disk: %s", b)
 	}
-	if !strings.Contains(s, `"rememberme_by_host"`) || !strings.Contains(s, `"bearer_present":true`) {
-		t.Fatalf("expected non-secret anchors present: %s", s)
+}
+
+func TestForgetSession(t *testing.T) {
+	c := &Config{ChromeProfile: "Default", Bearer: "JWT", BearerExp: "x", BearerSavedAt: "y", UserHash: "h", AllowSessionRefresh: true}
+	c.ForgetSession()
+	if c.Bearer != "" || c.BearerExp != "" || c.BearerSavedAt != "" || c.UserHash != "" {
+		t.Fatalf("session not forgotten: %+v", c)
+	}
+	if c.ChromeProfile != "Default" || !c.AllowSessionRefresh {
+		t.Fatalf("non-secret settings lost: %+v", c)
 	}
 }

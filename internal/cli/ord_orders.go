@@ -23,6 +23,9 @@ func newOrdOrdersCmd() *cobra.Command {
 	var page int
 	c.Flags().IntVar(&page, "page", 1, "numéro de page (20 ordres/page ; voir le bloc pagination dans la sortie)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if page < 1 {
+			return out.Fail(fmt.Errorf("--page %d invalide : ≥ 1 attendu", page))
+		}
 		ctx := cmd.Context()
 		cl, a, err := resolvePicked(ctx, *sel)
 		if err != nil {

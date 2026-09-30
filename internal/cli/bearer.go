@@ -135,5 +135,9 @@ func resolvePicked(ctx context.Context, sel string) (*client.Client, acct, error
 	if err != nil {
 		return nil, acct{}, err
 	}
+	// The key goes into URL paths: check it even though the bank sent it.
+	if err := validID("accountKey (réponse de la banque)", a.AccountKey); err != nil {
+		return nil, acct{}, err
+	}
 	return cl, a, nil
 }

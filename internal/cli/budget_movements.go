@@ -28,6 +28,9 @@ func newBudgetMovementsCmd() *cobra.Command {
 	c.Flags().StringVar(&from, "from", "", "date de début jj/mm/AAAA (défaut : il y a 3 ans)")
 	c.Flags().StringVar(&to, "to", "", "date de fin jj/mm/AAAA (défaut : aujourd’hui+40j)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if err := validDateFlags(from, to); err != nil {
+			return out.Fail(err)
+		}
 		ctx := cmd.Context()
 		cl, a, err := resolvePicked(ctx, *sel)
 		if err != nil {
@@ -36,6 +39,9 @@ func newBudgetMovementsCmd() *cobra.Command {
 		webid := a.PfmAccountKey
 		if webid == "" {
 			return out.Fail(fmt.Errorf("le compte %s n’a pas de pfmAccountKey (webid budget) — non activé PFM", a.AccountKey))
+		}
+		if err := validID("pfmAccountKey (réponse de la banque)", webid); err != nil {
+			return out.Fail(err)
 		}
 		now := time.Now()
 		if from == "" {

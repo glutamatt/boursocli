@@ -19,6 +19,9 @@ func newTopflopCmd() *cobra.Command {
 		if len(args) > 0 {
 			index = args[0]
 		}
+		if err := validSymbol("--index", index); err != nil {
+			return out.Fail(err)
+		}
 		ctx := cmd.Context()
 		cl, _, _, err := session(ctx)
 		if err != nil {

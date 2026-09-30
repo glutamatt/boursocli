@@ -23,6 +23,9 @@ func newOrdFiscaliteCmd() *cobra.Command {
 	var year string
 	c.Flags().StringVar(&year, "year", "2026", "année fiscale (années possibles 2021–2026)")
 	c.RunE = func(cmd *cobra.Command, _ []string) error {
+		if err := validYear("--year", year); err != nil {
+			return out.Fail(err)
+		}
 		ctx := cmd.Context()
 		cl, a, err := resolvePicked(ctx, *sel)
 		if err != nil {
