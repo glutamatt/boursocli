@@ -34,7 +34,8 @@ Kept: `LICENSE`, `package.json`, `dist/**/*.js`. Dropped: `README.md`,
 - It reads `SWEET_COOKIE_*` environment variables (for example
   `SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD`, `SWEET_COOKIE_BROWSERS`).
   `boursocli` starts node with a minimal, explicit environment, so these
-  variables never reach it.
+  variables never reach it — except `SWEET_COOKIE_LINUX_KEYRING`, the
+  keyring backend selector (`gnome` | `kwallet` | `basic`).
 - It copies the cookie database to `os.tmpdir()`. `boursocli` points
   `TMPDIR` to a private folder that it deletes itself, even if node is killed.
 

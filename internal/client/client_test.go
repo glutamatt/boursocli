@@ -398,6 +398,7 @@ func TestEgressPolicy(t *testing.T) {
 		"https://clients.boursobank.com/budget/exporter-mouvements/abc?movementSearch%5BfromDate%5D=01%2F01%2F2026",
 		"https://clients.boursorama.com/",
 		"https://CLIENTS.BOURSOBANK.COM/",
+		"https://clients.boursobank.com:443/", // default port written out
 	}
 	bad := []string{
 		"http://clients.boursobank.com/",            // cleartext
@@ -489,5 +490,78 @@ func TestCookieSourceIsLazy(t *testing.T) {
 	_, _, _, _ = c.do(ctx, http.MethodGet, srv.URL, "text/html", false)
 	if atomic.LoadInt32(&loads) != 1 || gotCookie != "jar=1" {
 		t.Fatalf("cookie source: loads=%d cookie=%q, want 1 load and the jar", loads, gotCookie)
+	}
+}
+
+func TestUserHashChecked(t *testing.T) {
+	var hits int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&hits, 1)
+		_, _ = w.Write([]byte(`garbage "USER_HASH":"x_/customer/profile/basic?" "DEFAULT_API_BEARER":"JWT.tok"`))
+	}))
+	defer srv.Close()
+	allow(t, srv)
+	apiBase, dashboard = srv.URL, srv.URL+"/"
+	defer func() {
+		apiBase = "https://api.boursobank.com/services/api/v1.7"
+		dashboard = "https://clients.boursobank.com/"
+	}()
+	c := New("ck=1", "")
+	if err := c.Bootstrap(context.Background()); err == nil {
+		t.Fatal("a USER_HASH with a path in it was accepted")
+	}
+	c.Bearer, c.UserHash = "JWT", "x_/customer/profile/basic?"
+	before := atomic.LoadInt32(&hits)
+	if _, _, err := c.API(context.Background(), "bank/account/accounts"); err == nil {
+		t.Fatal("API built a URL from an invalid user hash")
+	}
+	if err := c.Probe(context.Background()); !errors.Is(err, ErrBearerRejected) {
+		t.Fatalf("Probe with an invalid user hash: %v, want ErrBearerRejected", err)
+	}
+	if atomic.LoadInt32(&hits) != before {
+		t.Fatal("a request left with an invalid user hash")
+	}
+}
+
+// Recovery runs at most once per client, and never on trading/ (10006 there
+// = "not elevated to bourse", which a new bearer cannot fix).
+func TestRecoverOncePerProcessNotOnTrading(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"code":10006,"message":"expired"}`))
+	}))
+	defer srv.Close()
+	allow(t, srv)
+	apiBase = srv.URL
+	defer func() { apiBase = "https://api.boursobank.com/services/api/v1.7" }()
+	var recovers int32
+	c := New("", "")
+	c.Bearer, c.UserHash = "JWT", "H1"
+	c.SetRecover(func(context.Context) error {
+		atomic.AddInt32(&recovers, 1)
+		return nil
+	})
+	ctx := context.Background()
+	_, _, _ = c.API(ctx, "trading/orderdetail/orders/k?page=1")
+	if n := atomic.LoadInt32(&recovers); n != 0 {
+		t.Fatalf("trading/ 10006 triggered %d recoveries", n)
+	}
+	_, _, _ = c.API(ctx, "bank/account/accounts")
+	_, _, _ = c.API(ctx, "bank/account/operations/k")
+	if n := atomic.LoadInt32(&recovers); n != 1 {
+		t.Fatalf("%d recoveries, want exactly 1 per process", n)
+	}
+}
+
+func TestRedirectRefusedMessage(t *testing.T) {
+	src := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, "https://www.boursobank.com/maintenance", http.StatusFound)
+	}))
+	defer src.Close()
+	allow(t, src)
+	c := New("ck=1", "")
+	_, _, _, err := c.do(context.Background(), http.MethodGet, src.URL, "text/html", false)
+	if err == nil || !strings.Contains(err.Error(), "redirection refusée") || !strings.Contains(err.Error(), "Chrome") {
+		t.Fatalf("err = %v, want the redirect explanation", err)
 	}
 }

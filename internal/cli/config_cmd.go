@@ -41,7 +41,7 @@ func newConfigCmd() *cobra.Command {
 			}
 			switch args[0] {
 			case "chrome_profile":
-				cfg.ChromeProfile = args[1]
+				cfg.ChromeProfile, cfg.ChromeProfileAuto = args[1], false
 			case "allow_session_refresh":
 				on, err := strconv.ParseBool(args[1])
 				if err != nil {

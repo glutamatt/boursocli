@@ -9,12 +9,12 @@ import (
 )
 
 func TestValidators(t *testing.T) {
-	for _, v := range []string{"1rPENGI", "1rPCAC", "FR0013412020", "1rTCW8", "a.b-c_d"} {
+	for _, v := range []string{"1rPENGI", "1rPCAC", "FR0013412020", "1rTCW8", "a.b-c_d", "$INDU", "$COMPX"} {
 		if err := validSymbol("--symbol", v); err != nil {
 			t.Errorf("symbol %q refused: %v", v, err)
 		}
 	}
-	for _, v := range []string{"", "..", "../x", "a/b", "a?b", "a#b", "a%2e", ".a", "-a", "a b", strings.Repeat("a", 33)} {
+	for _, v := range []string{"", "..", "../x", "a/b", "a?b", "a#b", "a%2e", ".a", "-a", "a b", "$", "$$A", "a$b", strings.Repeat("a", 33)} {
 		if err := validSymbol("--symbol", v); err == nil {
 			t.Errorf("symbol %q accepted", v)
 		}

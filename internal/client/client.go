@@ -43,11 +43,24 @@ type Client struct {
 	// allowRefresh lets the transport send the one non-GET request
 	// (POST session/auth/refresh). Off by default: the CLI only reads.
 	allowRefresh bool
-	// recover is called once when the bank reports an expired session in
-	// the middle of a command (see resilientGet). nil = no recovery.
-	recover  func(context.Context) error
-	Bearer   string
-	UserHash string
+	// recover is called when the bank reports an expired session in the
+	// middle of a command (see resilientGet) — at most once per process, so
+	// a session that cannot be fixed never loops on the Chrome keychain.
+	// nil = no recovery.
+	recover   func(context.Context) error
+	recovered bool
+	Bearer    string
+	UserHash  string
+}
+
+// reUserHash: the bank's user hash goes into every bearer-plane path.
+var reUserHash = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+func validUserHash(h string) error {
+	if !reUserHash.MatchString(h) {
+		return fmt.Errorf("USER_HASH invalide (%d caractères, format inattendu) — refusé dans les URL", len(h))
+	}
+	return nil
 }
 
 // ErrBearerRejected means the bank refused the bearer (session expired or
@@ -87,7 +100,7 @@ func New(mergedCookie, userAgent string) *Client {
 			return errors.New("trop de redirections")
 		}
 		if err := egress.check(req.URL); err != nil {
-			return err
+			return fmt.Errorf("redirection refusée depuis %s : %w — la banque renvoie ailleurs (page de connexion, maintenance ?) : ouvrir BoursoBank dans Chrome, se reconnecter si besoin, puis relancer", via[len(via)-1].URL.Host, err)
 		}
 		req.Header.Set("user-agent", c.ua)
 		if via[0].Header.Get("cookie") != "" {
@@ -150,6 +163,9 @@ func (c *Client) Bootstrap(ctx context.Context) error {
 		}
 		return fmt.Errorf("pas de DEFAULT_API_BEARER dans le dashboard (HTTP %d) ni de cookie brsxds_ valide : la session Chrome BoursoBank est morte — se reconnecter dans Chrome, puis réessayer", status)
 	}
+	if err := validUserHash(string(mh[1])); err != nil {
+		return err
+	}
 	c.Bearer, c.UserHash = string(mb[1]), string(mh[1])
 	return nil
 }
@@ -186,7 +202,7 @@ func (c *Client) bearerFromCookie() (jwt, userHash string, ok bool) {
 			continue // expired or about to — don't substitute a dead token
 		}
 		uh := claimUserHash(m)
-		if uh == "" {
+		if validUserHash(uh) != nil {
 			continue
 		}
 		return tok, uh, true
@@ -272,6 +288,9 @@ func (c *Client) Refresh(ctx context.Context) error {
 // or 10006), and a plain error on anything else (network, throttle, 5xx).
 // No retry, no re-auth.
 func (c *Client) Probe(ctx context.Context) error {
+	if err := validUserHash(c.UserHash); err != nil {
+		return fmt.Errorf("%w (%w)", ErrBearerRejected, err)
+	}
 	u := fmt.Sprintf("%s/_user_/_%s_/customer/timeline/unreadcount?_host=clients.boursobank.com", apiBase, c.UserHash)
 	b, st, _, err := c.do(ctx, http.MethodGet, u, "application/json", true)
 	if err != nil {
@@ -292,9 +311,16 @@ func (c *Client) Probe(ctx context.Context) error {
 // API calls a Bearer-plane endpoint: GET api.boursobank.com/.../_user_/_<hash>_/<resource>.
 // Pass the resource WITHOUT the userHash segment (added here). NO cookie sent.
 // Resilient: throttle → bounded backoff (no re-auth); bank 401/10006 → one
-// Refresh + one retry.
+// recover() + one retry — except on trading/, where 10006 means "session
+// not elevated to bourse" (see cli.getJSON), which a new bearer cannot fix.
 func (c *Client) API(ctx context.Context, resource string) ([]byte, int, error) {
+	if err := validUserHash(c.UserHash); err != nil {
+		return nil, 0, err
+	}
 	u := fmt.Sprintf("%s/_user_/_%s_/%s?_host=clients.boursobank.com", apiBase, c.UserHash, resource)
+	if strings.HasPrefix(resource, "trading/") {
+		return c.getWith(ctx, u, "application/json", true, false)
+	}
 	return c.resilientGet(ctx, u, "application/json", true)
 }
 
@@ -328,8 +354,12 @@ func (c *Client) CookieOnce(ctx context.Context, fullURL string) ([]byte, int, e
 //
 // Bounded and serial; never retries on ctx cancellation.
 func (c *Client) resilientGet(ctx context.Context, url, accept string, bearer bool) ([]byte, int, error) {
+	return c.getWith(ctx, url, accept, bearer, true)
+}
+
+// getWith is resilientGet with the session recovery on or off.
+func (c *Client) getWith(ctx context.Context, url, accept string, bearer, recoverSession bool) ([]byte, int, error) {
 	const maxThrottle = 3
-	recovered := false
 	for attempt := 0; ; attempt++ {
 		b, st, _, err := c.do(ctx, http.MethodGet, url, accept, bearer)
 		if err != nil {
@@ -344,8 +374,8 @@ func (c *Client) resilientGet(ctx context.Context, url, accept string, bearer bo
 			}
 			continue
 		}
-		if bearer && !recovered && c.recover != nil && isBankSessionExpired(st, b) {
-			recovered = true
+		if bearer && recoverSession && !c.recovered && c.recover != nil && isBankSessionExpired(st, b) {
+			c.recovered = true
 			if rerr := c.recover(ctx); rerr == nil {
 				continue // one retry with the renewed session
 			}

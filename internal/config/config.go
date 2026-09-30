@@ -20,12 +20,16 @@ const Version = 2
 // Config is the on-disk state.
 type Config struct {
 	Version       int    `json:"version"`
-	ChromeProfile string `json:"chrome_profile,omitempty"`  // "Default", "Profile 1", or a path
-	Bearer        string `json:"bearer,omitempty"`          // scraped DEFAULT_API_BEARER (24h)
-	BearerSavedAt string `json:"bearer_saved_at,omitempty"` // RFC3339 UTC: when bearer was last established
-	BearerExp     string `json:"bearer_exp,omitempty"`      // RFC3339 UTC: JWT exp claim — steipete ExpiresAt pattern
-	UserHash      string `json:"user_hash,omitempty"`       // scraped USER_HASH
-	HTTPUserAgent string `json:"http_user_agent,omitempty"`
+	ChromeProfile string `json:"chrome_profile,omitempty"` // "Default", "Profile 1", or a path
+	// ChromeProfileAuto: ChromeProfile was chosen by the auto-pick, not by
+	// the user. Such a pin is dropped (and the scan runs again) when that
+	// profile no longer holds a live BoursoBank session.
+	ChromeProfileAuto bool   `json:"chrome_profile_auto,omitempty"`
+	Bearer            string `json:"bearer,omitempty"`          // scraped DEFAULT_API_BEARER (24h)
+	BearerSavedAt     string `json:"bearer_saved_at,omitempty"` // RFC3339 UTC: when bearer was last established
+	BearerExp         string `json:"bearer_exp,omitempty"`      // RFC3339 UTC: JWT exp claim — steipete ExpiresAt pattern
+	UserHash          string `json:"user_hash,omitempty"`       // scraped USER_HASH
+	HTTPUserAgent     string `json:"http_user_agent,omitempty"`
 	// AllowSessionRefresh lets the CLI send POST session/auth/refresh, the
 	// one request that changes state at the bank (it extends the session).
 	// Off by default: when the bearer dies, a new one comes from the live
@@ -45,9 +49,10 @@ func Path(override string) (string, error) {
 	return filepath.Join(dir, "boursocli", "config.json"), nil
 }
 
-// Load reads the config. The file and its folder must be private to the
-// current user (see checkPrivate); a config written by an older version with
-// cookie jars inside is rewritten at once without them.
+// Load reads the config. The file must be private to the current user and
+// its folder must not let others replace it (see checkPrivateFile/Dir). A v1
+// config (with the Chrome cookie jars inside) is rewritten at once without
+// them, and the v1 npm cache next to it is removed.
 func Load(path string) (*Config, error) {
 	if err := checkPrivateDir(filepath.Dir(path)); err != nil && !os.IsNotExist(err) {
 		return nil, err
@@ -69,14 +74,30 @@ func Load(path string) (*Config, error) {
 	var legacy struct {
 		CookiesByHost map[string]string `json:"cookies_by_host"`
 	}
-	if json.Unmarshal(b, &legacy) == nil && legacy.CookiesByHost != nil {
+	if c.Version < Version || (json.Unmarshal(b, &legacy) == nil && legacy.CookiesByHost != nil) {
 		// v1 stored the full Chrome cookie jars. Drop them from disk now,
 		// not at the next Save (which may never come).
 		if err := c.Save(path); err != nil {
 			return nil, fmt.Errorf("suppression des cookies de l’ancienne config %s : %w", path, err)
 		}
+		removeLegacyNpmCache(filepath.Dir(path))
 	}
 	return &c, nil
+}
+
+// removeLegacyNpmCache deletes the "ck-cache" folder v1 kept next to its
+// config (a runtime npm install of sweet-cookie). Only a folder that
+// really is that cache is removed.
+func removeLegacyNpmCache(dir string) {
+	cache := filepath.Join(dir, "ck-cache")
+	marker := filepath.Join(cache, "node_modules", "@steipete", "sweet-cookie", "package.json")
+	if fi, err := os.Lstat(cache); err != nil || !fi.IsDir() {
+		return
+	}
+	if _, err := os.Stat(marker); err != nil {
+		return
+	}
+	_ = os.RemoveAll(cache)
 }
 
 // Save writes the config atomically. The temp file is created with a random
@@ -160,6 +181,7 @@ func (c *Config) Redacted() map[string]any {
 	return map[string]any{
 		"version":               c.Version,
 		"chrome_profile":        c.ChromeProfile,
+		"chrome_profile_auto":   c.ChromeProfileAuto,
 		"bearer":                red(c.Bearer),
 		"bearer_saved_at":       c.BearerSavedAt, // a timestamp, not a secret
 		"bearer_exp":            c.BearerExp,     // JWT exp — the 24h ceiling

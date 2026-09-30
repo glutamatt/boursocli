@@ -232,9 +232,12 @@ func runOne(ctx context.Context, nodePath, runDir, profile, targetURL string, lo
 }
 
 // nodeEnv is the WHOLE environment node sees; nothing else is inherited.
-// NODE_OPTIONS / NODE_PATH could load other code, SWEET_COOKIE_* would
-// change what sweet-cookie reads (browsers, keyring, even a fixed "Safe
-// Storage" password), and a user PATH could shadow secret-tool / security.
+// NODE_OPTIONS / NODE_PATH could load other code, and most SWEET_COOKIE_*
+// variables change what sweet-cookie reads (browsers, profile, even a fixed
+// "Safe Storage" password). Kept: what the keyring helpers need, the
+// keyring backend selector, and PATH without relative entries (node's cwd is
+// our private folder; secret-tool may live in /run/current-system/sw/bin on
+// NixOS or in a Homebrew prefix).
 func nodeEnv(tmpDir, outPath string) []string {
 	keep := []string{
 		"HOME", "USER", "LOGNAME", "LANG", "LC_ALL",
@@ -243,10 +246,13 @@ func nodeEnv(tmpDir, outPath string) []string {
 		"XDG_CONFIG_HOME", "XDG_RUNTIME_DIR", "XDG_CURRENT_DESKTOP",
 		"DBUS_SESSION_BUS_ADDRESS", "DISPLAY", "WAYLAND_DISPLAY",
 		"KDE_FULL_SESSION", "KDE_SESSION_VERSION",
+		// gnome | kwallet | basic: for a Chrome whose keyring differs from
+		// the desktop (e.g. --password-store=gnome-libsecret under KDE).
+		"SWEET_COOKIE_LINUX_KEYRING",
 	}
 	if runtime.GOOS == "windows" {
 		keep = append(keep, "SYSTEMROOT", "SYSTEMDRIVE", "WINDIR", "COMSPEC",
-			"USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATH", "PATHEXT")
+			"USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATHEXT")
 	}
 	env := make([]string, 0, len(keep)+5)
 	for _, k := range keep {
@@ -254,16 +260,24 @@ func nodeEnv(tmpDir, outPath string) []string {
 			env = append(env, k+"="+v)
 		}
 	}
-	if runtime.GOOS != "windows" {
-		// secret-tool, kwallet-query, dbus-send (Linux) and security (macOS)
-		// live in the system folders.
-		env = append(env, "PATH=/usr/bin:/bin:/usr/sbin:/sbin")
-	}
+	env = append(env, "PATH="+absolutePath(os.Getenv("PATH")))
 	env = append(env, "TMPDIR="+tmpDir, "TMP="+tmpDir, "TEMP="+tmpDir)
 	if outPath != "" {
 		env = append(env, "BOURSOBANK_OUTPUT_PATH="+outPath)
 	}
 	return env
+}
+
+// absolutePath drops empty and relative PATH entries ("", ".", "bin"…):
+// they would resolve against node's working folder.
+func absolutePath(p string) string {
+	var keep []string
+	for _, d := range filepath.SplitList(p) {
+		if filepath.IsAbs(d) {
+			keep = append(keep, d)
+		}
+	}
+	return strings.Join(keep, string(os.PathListSeparator))
 }
 
 // vendoredFiles lists the embedded sweet-cookie files (slash paths relative

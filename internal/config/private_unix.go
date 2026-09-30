@@ -8,24 +8,29 @@ import (
 	"syscall"
 )
 
-// checkPrivateDir refuses a config folder that another user could write to
-// or that is a symlink: whoever controls the folder can swap config.json.
+// checkPrivateDir refuses a config folder in which another user could
+// replace config.json: one that belongs to another user (root excepted), or
+// that group/others may write to without the sticky bit. Read bits do not
+// matter — the file itself is 0600 — so a 0755 project folder, a 0750
+// home or /tmp (1777) are fine. Symlinks to the folder are followed: what
+// counts is the real folder.
 func checkPrivateDir(dir string) error {
-	fi, err := os.Lstat(dir)
+	fi, err := os.Stat(dir)
 	if err != nil {
 		return err
-	}
-	if fi.Mode()&os.ModeSymlink != 0 {
-		return fmt.Errorf("dossier de config %s : lien symbolique refusé", dir)
 	}
 	if !fi.IsDir() {
 		return fmt.Errorf("dossier de config %s : pas un dossier", dir)
 	}
-	if err := ownedByMe(dir, fi); err != nil {
-		return err
+	mode := fi.Mode()
+	if mode&os.ModeSticky != 0 {
+		return nil // /tmp-like: others cannot rename or remove our file
 	}
-	if fi.Mode().Perm()&0o077 != 0 {
-		return fmt.Errorf("dossier de config %s : droits %o trop larges (attendu 700 : chmod 700 %q)", dir, fi.Mode().Perm(), dir)
+	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() && st.Uid != 0 {
+		return fmt.Errorf("dossier de config %s : appartient à l’uid %d, pas à vous (uid %d) — refusé", dir, st.Uid, os.Getuid())
+	}
+	if mode.Perm()&0o022 != 0 {
+		return fmt.Errorf("dossier de config %s : droits %o, d’autres peuvent y écrire (chmod go-w %q)", dir, mode.Perm(), dir)
 	}
 	return nil
 }

@@ -11,8 +11,9 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
 - **Plus de npm au runtime** : sweet-cookie 0.2.0 est intégré au binaire
   (`internal/auth/sweetcookie`, vérifié par `make verify-vendor`). node
   tourne dans un dossier privé temporaire, effacé même si node est tué,
-  avec un environnement minimal (`NODE_OPTIONS`, `SWEET_COOKIE_*`, `PATH`
-  utilisateur exclus), `--no-addons`, sans `eval`.
+  avec un environnement minimal (`NODE_OPTIONS`, `NODE_PATH`,
+  `SWEET_COOKIE_*` exclus, `PATH` sans entrée relative), `--no-addons`,
+  sans `eval`.
 - **Garde de sortie** sur le transport : HTTPS, hôtes exacts, GET
   uniquement, chemins sans `..` ni octet encodé, chaque redirection
   vérifiée. Le cookie n'est jamais ajouté à une requête du plan Bearer.
@@ -20,19 +21,24 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
   demande, gardés en mémoire. Une config v1 est nettoyée au chargement.
 - **Plus de renouvellement automatique de session** : désactivé par
   défaut (`--allow-session-refresh`, `config set allow_session_refresh`).
-- **Config privée** : dossier 0700, fichier 0600, à vous, sans lien
-  symbolique ; écriture atomique par fichier temporaire aléatoire.
+- **Config privée** : fichier 0600, à vous, sans lien symbolique ; dossier
+  non inscriptible par d'autres ; écriture atomique par fichier temporaire
+  aléatoire. Migration v1 : cookies et ancien cache npm supprimés.
 - **Entrées vérifiées** avant toute session (symboles, ids, années, dates,
   page, clés de compte).
 - `export --out` n'écrase jamais un fichier et ne suit pas de lien.
-- Probe : seule une erreur d'authentification relit Chrome.
+- Probe : seule une erreur d'authentification relit Chrome ; les autres
+  échecs gardent le bearer. Une seule récupération de session par
+  processus, jamais sur `trading/`. `USER_HASH` vérifié avant usage.
 - CI/release : injection shell du workflow de release corrigée ; actions
   épinglées par SHA, outils par version, images par digest ; cask Homebrew
   retiré. `golang.org/x/net` 0.53.0 → 0.56.0.
 
 ### Ajouté
 - `config wipe`, `config set allow_session_refresh true|false`.
-- Le profil Chrome choisi automatiquement est épinglé dans la config.
+- Le profil Chrome choisi automatiquement est épinglé dans la config, et
+  re-scanné s'il n'a plus de session.
+- Symboles `$…` (indices US : `$INDU`, `$COMPX`) acceptés.
 
 ### Requis
 - Node ≥ 22.13 (plus npm).

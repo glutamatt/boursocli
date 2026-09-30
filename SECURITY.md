@@ -29,8 +29,9 @@ bearer from the dashboard. Security-relevant areas:
   checked against npm by `make verify-vendor`), run by node in a private
   temp folder with a minimal environment.
 - Secrets at rest: only the bearer (≤24h) and the user hash, in a private
-  `config.json` (folder 0700, file 0600, owner and no-symlink checks). The
-  Chrome cookie jars are never written to disk.
+  `config.json` (file 0600, owned by the user, not a symlink; its folder
+  must not be writable by others unless sticky). The Chrome cookie jars are
+  never written to disk.
 - Egress: `internal/client/egress.go` is the only way out. HTTPS, exact
   hosts, GET only (plus the session-refresh POST when the owner allows it),
   no dot segments or encoded bytes in paths, redirects checked hop by hop.

@@ -42,7 +42,11 @@ func (p policy) check(u *url.URL) error {
 	if u.User != nil {
 		return fmt.Errorf("sortie refusée : identifiants dans l’URL vers %s", u.Host)
 	}
-	if !p.hosts[strings.ToLower(u.Host)] {
+	host := strings.ToLower(u.Host)
+	if p.scheme == "https" {
+		host = strings.TrimSuffix(host, ":443") // the default port, written out
+	}
+	if !p.hosts[host] {
 		return fmt.Errorf("sortie refusée : hôte %q hors liste blanche (BoursoBank uniquement)", u.Host)
 	}
 	return checkPath(u)

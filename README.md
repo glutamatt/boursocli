@@ -44,9 +44,11 @@ contient que le bearer (≤ 24 h) : les commandes du plan Bearer marchent
 jusqu'à son expiration.
 
 ```sh
-docker run --rm -v "$HOME/.config/boursocli:/cfg" \
+docker run --rm --user "$(id -u)" -v "$HOME/.config/boursocli:/cfg" \
   boursocli:dev --config /cfg/config.json accounts
 ```
+
+`--user` : le fichier doit appartenir à l'utilisateur du conteneur.
 
 ## Authentification (sans mot de passe, sans secret d'environnement)
 
@@ -59,10 +61,11 @@ profil **Chrome** local, puis récupère le bearer API (24 h) sur le dashboard.
   dans un dossier privé temporaire, avec un environnement minimal, et ce
   dossier est effacé à la fin — même si node est tué.
 - Les cookies restent **en mémoire**. Ils ne sont jamais écrits sur disque.
-- Sur disque (`config.json`, dossier `0700`, fichier `0600`) : seulement le
-  bearer, sa date d'expiration, le user hash et vos réglages. Le CLI refuse
-  un dossier ou un fichier trop ouvert, un lien symbolique, ou un fichier
-  qui n'est pas à vous.
+- Sur disque (`config.json`, fichier `0600`) : seulement le bearer, sa date
+  d'expiration, le user hash et vos réglages. Le CLI refuse un fichier
+  lisible par d'autres, un lien symbolique, un fichier qui n'est pas à vous,
+  et un dossier où d'autres peuvent écrire (sauf dossier « sticky » comme
+  `/tmp`).
 - `config show` masque les secrets ; `config wipe` efface le bearer.
 - `--refresh` force un nouveau bearer depuis Chrome.
 
@@ -70,7 +73,9 @@ profil **Chrome** local, puis récupère le bearer API (24 h) sur le dashboard.
 
 Sans profil épinglé, le premier lancement choisit le profil Chrome dont la
 session BoursoBank est la plus récente, puis **l'épingle** dans la config :
-le scan de tous les profils n'a lieu qu'une fois. Pour choisir vous-même :
+le scan de tous les profils n'a lieu qu'une fois. Si ce profil n'a plus de
+session vivante, le CLI refait le scan. Pour choisir vous-même (épinglage
+définitif) :
 
 ```sh
 boursocli config set chrome_profile "Profile 9"   # nom ou chemin

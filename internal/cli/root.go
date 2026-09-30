@@ -84,30 +84,28 @@ func session(ctx context.Context) (*client.Client, *config.Config, string, error
 		return nil, nil, "", err
 	}
 	if flagProfile != "" {
-		cfg.ChromeProfile = flagProfile
+		cfg.ChromeProfile, cfg.ChromeProfileAuto = flagProfile, false
 	}
 	allowRefresh := flagAllowRefresh || cfg.AllowSessionRefresh
 
 	c := client.New("", cfg.HTTPUserAgent)
 	c.AllowRefresh(allowRefresh)
 	c.SetCookieSource(func(ctx context.Context) (string, error) {
-		out.Logf("extraction des cookies BoursoBank depuis Chrome (profil %q, bi-domaine)…", orDefault(cfg.ChromeProfile))
-		ex, err := auth.ExtractCookies(ctx, cfg.ChromeProfile, os.Stderr)
-		if err != nil {
-			return "", err
-		}
-		if cfg.ChromeProfile == "" && ex.Profile != "" {
-			// Pin the auto-picked profile: the all-profile scan runs once.
-			cfg.ChromeProfile = ex.Profile
-			_ = cfg.Save(cfgPath)
-		}
-		return auth.MergedHeader(ex.CookiesByHost), nil
+		return loadCookies(ctx, cfg, cfgPath)
 	})
 	// bootstrap = a new bearer from the live Chrome session: fresh cookies,
-	// then GET dashboard.
+	// then GET dashboard. When an auto-picked profile no longer holds a
+	// live session, drop that pin and scan the profiles once more.
 	bootstrap := func(ctx context.Context) error {
 		c.SetCookie("")
-		if err := c.Bootstrap(ctx); err != nil {
+		err := c.Bootstrap(ctx)
+		if err != nil && cfg.ChromeProfileAuto {
+			out.Logf("profil Chrome auto-épinglé %q sans session vivante — nouveau scan des profils", cfg.ChromeProfile)
+			cfg.ChromeProfile, cfg.ChromeProfileAuto = "", false
+			c.SetCookie("")
+			err = c.Bootstrap(ctx)
+		}
+		if err != nil {
 			return err
 		}
 		cfg.Bearer, cfg.UserHash = c.Bearer, c.UserHash
@@ -118,25 +116,33 @@ func session(ctx context.Context) (*client.Client, *config.Config, string, error
 		}
 		return cfg.Save(cfgPath)
 	}
-	if allowRefresh {
-		c.SetRecover(c.Refresh)
-	} else {
-		c.SetRecover(bootstrap)
-	}
+	// Mid-command expiry: the (opt-in) refresh keeps the server session,
+	// but the bearer must still be scraped again.
+	c.SetRecover(func(ctx context.Context) error {
+		if allowRefresh {
+			if err := c.Refresh(ctx); err != nil {
+				out.Debugf("refresh refusé (%v) — nouveau bearer depuis Chrome", err)
+			}
+		}
+		return bootstrap(ctx)
+	})
 
 	needBootstrap := flagRefresh || cfg.BearerLikelyExpired(2*time.Minute)
 	if !needBootstrap {
 		c.Bearer, c.UserHash = cfg.Bearer, cfg.UserHash
 		// A re-login in Chrome kills the old server session even though the
-		// JWT exp is still in the future. Probe cheaply; only an auth
-		// refusal leads to the Chrome cookie store — a network error or a
-		// throttle is reported as is.
+		// JWT exp is still in the future. Probe cheaply. Only an auth
+		// refusal leads to the Chrome cookie store; any other failure
+		// (network, throttle, 404/5xx on the probe endpoint) keeps the
+		// stored bearer — the command itself reports real problems, and a
+		// real expiry there goes through recover.
 		if err := c.Probe(ctx); err != nil {
-			if !errors.Is(err, client.ErrBearerRejected) {
-				return nil, nil, "", err
+			if errors.Is(err, client.ErrBearerRejected) {
+				out.Debugf("bearer en config rejeté (%v) — nouveau bearer depuis Chrome", err)
+				needBootstrap = true
+			} else {
+				out.Debugf("probe sans verdict (%v) — bearer en config conservé", err)
 			}
-			out.Debugf("bearer en config rejeté (%v) — nouveau bearer depuis Chrome", err)
-			needBootstrap = true
 		}
 	}
 	if needBootstrap {
@@ -145,6 +151,29 @@ func session(ctx context.Context) (*client.Client, *config.Config, string, error
 		}
 	}
 	return c, cfg, cfgPath, nil
+}
+
+// loadCookies reads both jars from Chrome. With no profile set, the
+// auto-pick chooses one and it is pinned (marked auto) so the scan runs
+// once. A failing auto pin is dropped and the scan runs again.
+func loadCookies(ctx context.Context, cfg *config.Config, cfgPath string) (string, error) {
+	out.Logf("extraction des cookies BoursoBank depuis Chrome (profil %q, bi-domaine)…", orDefault(cfg.ChromeProfile))
+	ex, err := auth.ExtractCookies(ctx, cfg.ChromeProfile, os.Stderr)
+	if err != nil && cfg.ChromeProfileAuto {
+		out.Logf("profil Chrome auto-épinglé %q illisible (%v) — nouveau scan des profils", cfg.ChromeProfile, err)
+		cfg.ChromeProfile, cfg.ChromeProfileAuto = "", false
+		ex, err = auth.ExtractCookies(ctx, "", os.Stderr)
+	}
+	if err != nil {
+		return "", err
+	}
+	if cfg.ChromeProfile == "" && ex.Profile != "" {
+		cfg.ChromeProfile, cfg.ChromeProfileAuto = ex.Profile, true
+		if err := cfg.Save(cfgPath); err != nil {
+			return "", err
+		}
+	}
+	return auth.MergedHeader(ex.CookiesByHost), nil
 }
 
 func orDefault(s string) string {

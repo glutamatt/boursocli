@@ -69,7 +69,8 @@ func TestNodeEnvIsMinimal(t *testing.T) {
 	t.Setenv("SWEET_COOKIE_CHROME_SAFE_STORAGE_PASSWORD", "x")
 	t.Setenv("SWEET_COOKIE_BROWSERS", "firefox")
 	t.Setenv("npm_config_registry", "https://evil.example")
-	t.Setenv("PATH", "/tmp/evil-bin:/usr/bin")
+	t.Setenv("PATH", "/usr/local/bin:.:bin::/usr/bin")
+	t.Setenv("SWEET_COOKIE_LINUX_KEYRING", "gnome")
 	t.Setenv("HOME", "/home/someone")
 
 	env := nodeEnv("/private/tmp", "/private/out.json")
@@ -83,8 +84,11 @@ func TestNodeEnvIsMinimal(t *testing.T) {
 			t.Errorf("%s leaked into the node environment", k)
 		}
 	}
-	if runtime.GOOS != "windows" && got["PATH"] != "/usr/bin:/bin:/usr/sbin:/sbin" {
-		t.Errorf("PATH = %q, want the fixed system PATH", got["PATH"])
+	if runtime.GOOS != "windows" && got["PATH"] != "/usr/local/bin:/usr/bin" {
+		t.Errorf("PATH = %q, want the absolute entries only", got["PATH"])
+	}
+	if got["SWEET_COOKIE_LINUX_KEYRING"] != "gnome" {
+		t.Error("the keyring backend selector must reach node")
 	}
 	if got["HOME"] != "/home/someone" || got["TMPDIR"] != "/private/tmp" || got["BOURSOBANK_OUTPUT_PATH"] != "/private/out.json" {
 		t.Errorf("required variables missing: %v", got)
