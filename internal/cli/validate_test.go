@@ -75,7 +75,7 @@ func TestInjectionRefusedBeforeSession(t *testing.T) {
 		root.SetArgs(append(args, "--config", cfg, "--quiet"))
 		root.SetOut(&strings.Builder{})
 		err := root.ExecuteContext(context.Background())
-		if err == nil || !(strings.Contains(err.Error(), "invalide") || strings.Contains(err.Error(), "refusée")) {
+		if err == nil || (!strings.Contains(err.Error(), "invalide") && !strings.Contains(err.Error(), "refusée")) {
 			t.Errorf("%v: err = %v, want a validation error", args, err)
 		}
 		if _, statErr := os.Stat(cfgDir); !os.IsNotExist(statErr) {
