@@ -9,6 +9,7 @@
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { importNodeSqlite } from './sweet-cookie/dist/util/nodeSqlite.js';
 
 function out() { return process.env.BOURSOBANK_OUTPUT_PATH || ''; }
 async function write(o) { const p = out(); if (!p) throw new Error('BOURSOBANK_OUTPUT_PATH missing'); await fs.writeFile(p, JSON.stringify(o), 'utf8'); }
@@ -46,7 +47,9 @@ async function cookieDbFor(root, name) {
 // undefined = this DB unreadable (skip, keep scanning); else {count,recent}.
 async function scoreProfile(dbFile, dom) {
   let sqlite;
-  try { sqlite = await import('node:sqlite'); } catch { return null; }
+  // sweet-cookie's loader silences only node's "SQLite is experimental"
+  // warning (noise on stderr for agents) and caches the module it uses too.
+  try { sqlite = await importNodeSqlite(); } catch { return null; }
   const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'bb-scan-'));
   try {
     const cp = path.join(tmp, 'C');

@@ -184,6 +184,9 @@ CREATE TABLE cookies(creation_utc INTEGER, host_key TEXT, name TEXT, value TEXT,
 	if all := MergedHeader(ex.CookiesByHost); strings.Contains(all, "must-not-leak") {
 		t.Errorf("a non-BoursoBank cookie was extracted: %q", all)
 	}
+	if strings.Contains(log.String(), "ExperimentalWarning") {
+		t.Errorf("node warning noise on stderr: %s", log.String())
+	}
 	for _, v := range []string{"bank-secret", "bourse-secret", "must-not-leak"} {
 		if strings.Contains(log.String(), v) {
 			t.Errorf("cookie value %q reached the log: %s", v, log.String())
