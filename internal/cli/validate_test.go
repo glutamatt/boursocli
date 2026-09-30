@@ -68,13 +68,14 @@ func TestInjectionRefusedBeforeSession(t *testing.T) {
 		{"budget-movements", "--account", "cav", "--to", "bad"},
 		{"ord-mouvements", "--account", "pea", "--period", "8-2026&form[x]=1"},
 		{"docs", "--section", "bourse", "--from", "1/1/26"},
+		{"download", "--url", "https://api.boursobank.com/services/api/v1.7/_user_/_H_/bank/cashtransfer", "--out", "x.pdf"},
 	}
 	for _, args := range cases {
 		root := buildRoot()
 		root.SetArgs(append(args, "--config", cfg, "--quiet"))
 		root.SetOut(&strings.Builder{})
 		err := root.ExecuteContext(context.Background())
-		if err == nil || !strings.Contains(err.Error(), "invalide") {
+		if err == nil || !(strings.Contains(err.Error(), "invalide") || strings.Contains(err.Error(), "refusée")) {
 			t.Errorf("%v: err = %v, want a validation error", args, err)
 		}
 		if _, statErr := os.Stat(cfgDir); !os.IsNotExist(statErr) {

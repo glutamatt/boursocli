@@ -36,7 +36,10 @@ bearer from the dashboard. Security-relevant areas:
   hosts, GET only (plus the session-refresh POST when the owner allows it),
   no dot segments or encoded bytes in paths, redirects checked hop by hop.
 - Input validation: every value that goes into a URL path.
-- Local files: the CLI writes only its own config; data goes to stdout.
+- Local files: the CLI writes its own config, and `download --out` creates
+  a NEW file only (O_EXCL: no overwrite, no symlink). Other data goes to
+  stdout. `download` accepts only the bank's document-download URLs and
+  checks the answer is a PDF.
 - Build and release: actions pinned by SHA, tools by version, images by
   digest; no Homebrew cask.
 

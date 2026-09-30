@@ -112,6 +112,7 @@ boursocli ord-fiscalite --account pea --year 2026
 boursocli ord-ost --account pea
 boursocli documents --account pea       # relevés, avis… d'un compte
 boursocli docs --section bourse --from 01/01/2026   # avis d'opérés, relevés espèces, frais
+boursocli download --url <downloadUrl> --out avis.pdf   # le PDF d'un document (nouveau fichier)
 boursocli transfers --account <clé> ; boursocli sepa --account <clé>
 boursocli card --account card ; boursocli budgets ; boursocli incidents --account <clé>
 boursocli version ; boursocli --version
@@ -138,6 +139,11 @@ indique la bonne commande.
 (défaut : 3 mois ; plafond `--max-pages`, 40 pages de 30). La commande
 `export` a été retirée : la banque exige désormais un POST avec jeton CSRF
 pour l'export CSV, et ce CLI ne fait que des GET.
+
+**Documents** : `download` n'accepte que les liens de téléchargement de
+documents BoursoBank (`downloadUrl` de `docs` / `documents`), vérifie que la
+réponse est un PDF, et crée **un nouveau fichier** : jamais d'écrasement,
+jamais de lien symbolique suivi.
 
 Les échecs sont toujours explicites : un non-200, une erreur de décodage ou
 une dérive de schéma sort en `1` avec `{"ok":false,"error":…}`.
@@ -198,7 +204,8 @@ les contourner). Exemple de `.claude/settings.json` :
       "Bash(boursocli positions:*)",
       "Bash(boursocli budget-movements:*)",
       "Bash(boursocli ord-mouvements:*)",
-      "Bash(boursocli docs:*)"
+      "Bash(boursocli docs:*)",
+      "Bash(boursocli download:*)"
     ],
     "deny": [
       "Read(~/.config/boursocli/**)",

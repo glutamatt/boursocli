@@ -59,6 +59,10 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
   « Mouvements précédents », relevé dans Chrome) jusqu'à `--from`, avec
   dédoublonnage par `data-id` ; `--max-pages`, `pages`, `stoppedBy`.
 
+- `download --url <downloadUrl> --out <fichier.pdf>` : PDF d'un avis
+  d'opéré, relevé, IFU, RIB… Liens de téléchargement BoursoBank uniquement,
+  réponse vérifiée (`%PDF-`), nouveau fichier seulement.
+
 ### Retiré
 - `export` : la banque exige désormais un POST avec jeton CSRF ; tout
   l'historique passe par `budget-movements`, en GET.

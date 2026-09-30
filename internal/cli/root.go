@@ -57,7 +57,7 @@ func buildRoot() *cobra.Command {
 		newConfigCmd(), newAccountsCmd(),
 		newOperationsCmd(), newTransfersCmd(), newBudgetsCmd(), newIncidentsCmd(),
 		newPositionsCmd(), newOrdOrdersCmd(), newOrdFiscaliteCmd(), newOrdMouvementsCmd(),
-		newDocumentsCmd(), newOrdOstCmd(), newBudgetMovementsCmd(),
+		newDocumentsCmd(), newOrdOstCmd(), newBudgetMovementsCmd(), newDownloadCmd(),
 		newCardCmd(), newSepaCmd(), newQuoteCmd(),
 		newOrderbookCmd(), newTopflopCmd(), newMessagesCmd(),
 		newProfileCmd(), newRecipientsCmd(),
