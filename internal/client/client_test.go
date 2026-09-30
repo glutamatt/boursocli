@@ -299,9 +299,6 @@ func TestAPICookieWrappers(t *testing.T) {
 	if b, st, err := c.Cookie(context.Background(), srv.URL+"/page"); err != nil || st != 200 || !strings.Contains(string(b), "ok") {
 		t.Fatalf("Cookie wrapper failed: st=%d err=%v", st, err)
 	}
-	if b, st, err := c.CookieOnce(context.Background(), srv.URL+"/once"); err != nil || st != 200 || !strings.Contains(string(b), "ok") {
-		t.Fatalf("CookieOnce wrapper failed: st=%d err=%v", st, err)
-	}
 }
 
 func TestRedirectToUntrustedHostRefused(t *testing.T) {

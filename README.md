@@ -104,7 +104,7 @@ stderr, code de sortie `0`/`1`. `--format table` pour les humains,
 boursocli accounts                      # comptes + soldes (JSON)
 boursocli accounts --format table
 boursocli operations --account <clé>    # 30 opérations récentes (cav, livret, card)
-boursocli budget-movements --account <clé> --from 01/01/2026
+boursocli budget-movements --account <clé> --from 01/01/2026   # tout l'historique depuis cette date
 boursocli positions --account pea       # portefeuille titres + résumé (cumul des versements…)
 boursocli ord-mouvements --account pea --period 7-2026,8-2026   # historique titres/espèces par mois
 boursocli ord-orders --account pea      # ordres récents
@@ -133,9 +133,11 @@ Ambiguïté ou aucune correspondance → une erreur explicite qui liste les
 choix. Une commande lancée sur un type qu'elle ne sait pas lire le dit, et
 indique la bonne commande.
 
-**`export` est cassé** (constaté le 2026-09-30) : la banque exige désormais
-un POST avec jeton CSRF pour l'export CSV, et ce CLI ne fait que des GET.
-En attendant : `operations`, `budget-movements`, `ord-mouvements --period`.
+**Historique** : `budget-movements` suit la pagination du site (lien
+« Mouvements précédents », GET `?continuationToken=`) jusqu'à `--from`
+(défaut : 3 mois ; plafond `--max-pages`, 40 pages de 30). La commande
+`export` a été retirée : la banque exige désormais un POST avec jeton CSRF
+pour l'export CSV, et ce CLI ne fait que des GET.
 
 Les échecs sont toujours explicites : un non-200, une erreur de décodage ou
 une dérive de schéma sort en `1` avec `{"ok":false,"error":…}`.
@@ -194,7 +196,9 @@ les contourner). Exemple de `.claude/settings.json` :
       "Bash(boursocli accounts:*)",
       "Bash(boursocli operations:*)",
       "Bash(boursocli positions:*)",
-      "Bash(boursocli export:*)"
+      "Bash(boursocli budget-movements:*)",
+      "Bash(boursocli ord-mouvements:*)",
+      "Bash(boursocli docs:*)"
     ],
     "deny": [
       "Read(~/.config/boursocli/**)",
@@ -212,12 +216,12 @@ l'agent.
 ## État
 
 - 21 commandes de lecture. Revalidées sur un compte réel le 2026-09-30
-  (comptes courants, livrets, PEA, carte, assurance-vie) : toutes répondent
-  sauf `export` (voir plus haut). Le durcissement est aussi couvert par des
-  tests hors ligne (serveurs httptest, faux profil Chrome).
-- Limites connues : `operations` et `budget-movements` s'arrêtent à 30
-  lignes (la suite se charge par un curseur non encore compris) ;
-  `ord-orders` ne renvoie que les ordres récents.
+  (comptes courants, livrets, PEA, carte, assurance-vie) : toutes répondent.
+  Le durcissement est aussi couvert par des tests hors ligne (serveurs
+  httptest, faux profil Chrome).
+- Limites connues : `operations` = 30 opérations récentes (utiliser
+  `budget-movements`) ; `ord-orders` ne renvoie que les ordres récents
+  (utiliser `ord-mouvements --period`).
 - Pas de virement, ni d'aucune écriture : c'est voulu.
 - Ce dépôt ne contient que le code du client : pas de spécification d'API
   tierce.

@@ -26,7 +26,6 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
   aléatoire. Migration v1 : cookies et ancien cache npm supprimés.
 - **Entrées vérifiées** avant toute session (symboles, ids, années, dates,
   page, clés de compte).
-- `export --out` n'écrase jamais un fichier et ne suit pas de lien.
 - Probe : seule une erreur d'authentification relit Chrome ; les autres
   échecs gardent le bearer. Une seule récupération de session par
   processus, jamais sur `trading/`. `USER_HASH` vérifié avant usage.
@@ -56,9 +55,13 @@ Lecture seule, sûr à confier à un agent. Voir `SECURITY.md`.
 
 ### Ajouté (suite)
 - `ord-mouvements --period M-AAAA[,…]` et `availablePeriods`.
+- `budget-movements` paginé : suit `?continuationToken=` (lien
+  « Mouvements précédents », relevé dans Chrome) jusqu'à `--from`, avec
+  dédoublonnage par `data-id` ; `--max-pages`, `pages`, `stoppedBy`.
 
-### Connu
-- `export` cassé : la banque exige un POST avec jeton CSRF.
+### Retiré
+- `export` : la banque exige désormais un POST avec jeton CSRF ; tout
+  l'historique passe par `budget-movements`, en GET.
 
 ### Requis
 - Node ≥ 22.13 (plus npm).

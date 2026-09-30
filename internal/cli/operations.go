@@ -8,11 +8,11 @@ import (
 // newOperationsCmd: Bearer bank/account/operations/<accountKey>.
 // FIXED 30 most-recent,
 // pagination:null (?page/?limit accepted but IGNORED). For full history use
-// `export`. JSON output is the exhaustive payload; table is a lossy view.
+// `budget-movements`. JSON output is the exhaustive payload; table is a lossy view.
 func newOperationsCmd() *cobra.Command {
 	c := &cobra.Command{
 		Use:   "operations",
-		Short: "Opérations récentes (Bearer ; 30 plus récentes fixes, sans pagination — utiliser `export` pour l’historique)",
+		Short: "Opérations récentes (Bearer ; 30 plus récentes fixes, sans pagination — utiliser `budget-movements` pour l’historique)",
 	}
 	sel := addAccountFlag(c)
 	c.RunE = func(cmd *cobra.Command, _ []string) error {

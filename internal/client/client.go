@@ -89,9 +89,9 @@ func New(mergedCookie, userAgent string) *Client {
 	}
 	c.hc = &http.Client{Timeout: 20 * time.Second, Transport: &guard{next: tr, c: c}}
 	// We carry no cookie jar (deliberate, dual-domain). Go DROPS the
-	// Cookie header on a cross-host redirect, so the cookie-plane export
-	// chain (clients.boursobank.com → api.boursobank.com/files/
-	// download.phtml) lands unauthenticated → 401. Re-attach the session
+	// Cookie header on a cross-host redirect, so a cookie-plane chain
+	// across bank hosts (clients.boursobank.com → api.boursobank.com/
+	// files/…) would land unauthenticated → 401. Re-attach the session
 	// cookie — but ONLY on a cookie-plane request (the first hop carried
 	// the cookie) and ONLY to an allow-listed HTTPS host. The guard then
 	// refuses any hop outside the allow-list before it is sent.
@@ -331,17 +331,10 @@ func (c *Client) PublicAPI(ctx context.Context, resource string) ([]byte, int, e
 }
 
 // Cookie calls a cookie-plane URL with the merged dual-domain cookie.
-// Resilient like API. NOT for one-shot URLs (download.phtml token) — use
-// CookieOnce there so a throttled retry can't burn the token.
+// Resilient like API (a throttled GET is retried: use it only for
+// idempotent pages, never for one-shot token URLs).
 func (c *Client) Cookie(ctx context.Context, fullURL string) ([]byte, int, error) {
 	return c.resilientGet(ctx, fullURL, "text/html, */*", false)
-}
-
-// CookieOnce is a single cookie-plane GET with no retry/backoff — for
-// non-idempotent / one-shot URLs.
-func (c *Client) CookieOnce(ctx context.Context, fullURL string) ([]byte, int, error) {
-	b, st, _, err := c.do(ctx, http.MethodGet, fullURL, "text/html, */*", false)
-	return b, st, err
 }
 
 // resilientGet wraps an idempotent GET with two SEPARATE

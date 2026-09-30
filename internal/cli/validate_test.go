@@ -52,36 +52,6 @@ func TestValidators(t *testing.T) {
 	}
 }
 
-func TestWriteNewFile(t *testing.T) {
-	dir := t.TempDir()
-	p := filepath.Join(dir, "ops.csv")
-	if err := writeNewFile(p, []byte("a;b\n")); err != nil {
-		t.Fatalf("new file: %v", err)
-	}
-	if fi, _ := os.Stat(p); fi.Mode().Perm() != 0o600 {
-		t.Errorf("perm = %o, want 600", fi.Mode().Perm())
-	}
-	// never overwrite
-	if err := writeNewFile(p, []byte("other")); err == nil {
-		t.Error("existing file overwritten")
-	}
-	if b, _ := os.ReadFile(p); string(b) != "a;b\n" { //nolint:gosec // G304: test temp file
-		t.Errorf("content changed: %q", b)
-	}
-	// never follow a symlink, even a dangling one
-	target := filepath.Join(dir, "elsewhere")
-	link := filepath.Join(dir, "link.csv")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-	if err := writeNewFile(link, []byte("secret")); err == nil {
-		t.Error("write through a symlink accepted")
-	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
-		t.Error("symlink target was created")
-	}
-}
-
 // A hostile path in an argument must be refused before the command opens a
 // session: no config read, no Chrome cookie store, no request.
 func TestInjectionRefusedBeforeSession(t *testing.T) {
@@ -94,7 +64,7 @@ func TestInjectionRefusedBeforeSession(t *testing.T) {
 		{"budgets", "--id", "../x"},
 		{"docs", "--section", "ifu", "--year", "2025&x=1"},
 		{"ord-fiscalite", "--account", "ord", "--year", "x"},
-		{"export", "--account", "cav", "--from", "2026-01-01"},
+		{"budget-movements", "--account", "cav", "--from", "2026-01-01"},
 		{"budget-movements", "--account", "cav", "--to", "bad"},
 		{"ord-mouvements", "--account", "pea", "--period", "8-2026&form[x]=1"},
 		{"docs", "--section", "bourse", "--from", "1/1/26"},
